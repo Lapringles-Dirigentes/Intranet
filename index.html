@@ -39,7 +39,7 @@
   const db  = getFirestore(app);
 
   // ============ MÓDULO PRESENTES (sin login: usa un nombre guardado en el navegador) ============
-  let jovenesCache = [];
+  window.jovenesCache = [];
   let unsubJovenesListener = null;
 
   function nombreDirigente() {
@@ -62,7 +62,7 @@
     if (ideaInput && nombre && !ideaInput.value) ideaInput.value = nombre;
   }
 
-  function calcularEdad(fechaISO) {
+  window.calcularEdad = function calcularEdad(fechaISO) {
     if (!fechaISO) return null;
     const hoy = new Date();
     const nac = new Date(fechaISO + "T00:00:00");
@@ -72,7 +72,7 @@
     return edad;
   }
 
-  function diasHastaCumple(fechaISO) {
+  window.diasHastaCumple = function diasHastaCumple(fechaISO) {
     if (!fechaISO) return 999;
     const hoy = new Date(); hoy.setHours(0,0,0,0);
     const nac = new Date(fechaISO + "T00:00:00");
@@ -89,7 +89,7 @@
       ? query(collection(db, "jovenes"), where("rama", "==", ramaSel), where("activo", "==", true), orderBy("apellido"))
       : query(collection(db, "jovenes"), where("activo", "==", true), orderBy("apellido"));
     unsubJovenesListener = onSnapshot(q, snap => {
-      jovenesCache = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      window.jovenesCache = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       window.renderJovenesLista();
       window.renderCumplesProximos();
     }, err => {
@@ -174,7 +174,7 @@
     wrap.innerHTML = jovenes.map(j => `
       <div class="joven-check-row">
         <span class="nombre">${j.nombre} ${j.apellido}</span>
-        <span class="edad-tag">${calcularEdad(j.fechaNacimiento) ?? "—"} años</span>
+        <span class="edad-tag">${window.calcularEdad(j.fechaNacimiento) ?? "—"} años</span>
         <input type="checkbox" id="check-${j.id}" ${marcados[j.id] ? "checked" : ""}>
       </div>`).join("") +
       `<button class="btn-guardar-lista" onclick="guardarListaAsistencia('${rama}','${fecha}')">💾 Guardar asistencia</button>`;
@@ -1107,12 +1107,12 @@
   window.renderJovenesLista = () => {
     const wrap = document.getElementById('jovenes-lista-wrap');
     if (!wrap) return;
-    if (jovenesCache.length === 0) { wrap.innerHTML = `<p class="presentes-empty">No hay jóvenes cargados todavía.</p>`; return; }
-    wrap.innerHTML = jovenesCache.map(j => `
+    if (window.jovenesCache.length === 0) { wrap.innerHTML = `<p class="presentes-empty">No hay jóvenes cargados todavía.</p>`; return; }
+    wrap.innerHTML = window.jovenesCache.map(j => `
       <div class="joven-card">
         <div class="info">
           <strong>${j.nombre} ${j.apellido}</strong>
-          <span>${j.rama} · ${calcularEdad(j.fechaNacimiento) ?? "—"} años · nació ${j.fechaNacimiento || "—"}</span>
+          <span>${j.rama} · ${window.calcularEdad(j.fechaNacimiento) ?? "—"} años · nació ${j.fechaNacimiento || "—"}</span>
         </div>
         <div class="joven-card-acciones">
           <button onclick='abrirFormJoven(${JSON.stringify(j).replace(/'/g,"&apos;")})'>✏️ Editar</button>
@@ -1124,8 +1124,8 @@
   window.renderCumplesProximos = () => {
     const wrap = document.getElementById('cumples-proximos');
     if (!wrap) return;
-    const proximos = jovenesCache
-      .map(j => ({ ...j, dias: diasHastaCumple(j.fechaNacimiento) }))
+    const proximos = window.jovenesCache
+      .map(j => ({ ...j, dias: window.diasHastaCumple(j.fechaNacimiento) }))
       .filter(j => j.dias <= 30)
       .sort((a,b) => a.dias - b.dias);
     if (proximos.length === 0) { wrap.innerHTML = ''; return; }
@@ -1178,7 +1178,7 @@
 
   window.exportarJovenesCSV = () => {
     const filas = [['Nombre','Apellido','Rama','Fecha nacimiento','Edad','Contacto']];
-    jovenesCache.forEach(j => filas.push([j.nombre, j.apellido, j.rama, j.fechaNacimiento||'', calcularEdad(j.fechaNacimiento)??'', j.contacto||'']));
+    window.jovenesCache.forEach(j => filas.push([j.nombre, j.apellido, j.rama, j.fechaNacimiento||'', window.calcularEdad(j.fechaNacimiento)??'', j.contacto||'']));
     const csv = filas.map(f => f.map(c => `"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
     const blob = new Blob(["\ufeff" + csv], { type: 'text/csv;charset=utf-8;' });
     const a = document.createElement('a');
