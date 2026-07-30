@@ -32,21 +32,23 @@
   let unsubJovenesListener = null;
 
   function nombreDirigente() {
-    return localStorage.getItem('presentes_dirigente_nombre') || '';
+    return localStorage.getItem('dirigente_nombre') || '';
   }
 
   window.guardarNombreDirigente = () => {
     const val = document.getElementById('dirigente-nombre-input').value.trim();
-    localStorage.setItem('presentes_dirigente_nombre', val);
+    localStorage.setItem('dirigente_nombre', val);
     actualizarEstadoDirigente();
   };
 
   function actualizarEstadoDirigente() {
     const nombre = nombreDirigente();
     const badge = document.getElementById('dirigente-nombre-badge');
-    if (badge) badge.textContent = nombre ? ('Registrando como: ' + nombre) : 'Todavía no ingresaste tu nombre';
+    if (badge) badge.textContent = nombre ? ('Identificado como: ' + nombre) : 'Todavía no ingresaste tu nombre';
     const input = document.getElementById('dirigente-nombre-input');
     if (input && nombre) input.value = nombre;
+    const ideaInput = document.getElementById('idea-nombre-input');
+    if (ideaInput && nombre && !ideaInput.value) ideaInput.value = nombre;
   }
 
   function calcularEdad(fechaISO) {
@@ -210,6 +212,72 @@
       importados += lote.length;
     }
     return importados;
+  };
+
+  // ============ TAREAS (colaborativo) ============
+  let unsubTareasListener = null;
+
+  window.iniciarTareas = () => {
+    if (unsubTareasListener) return; // ya está escuchando
+    const q = query(collection(db, "tareas"), orderBy("creadoEn", "desc"));
+    unsubTareasListener = onSnapshot(q, snap => {
+      const tareas = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      window.renderTareas(tareas);
+    });
+  };
+
+  window.agregarTarea = async () => {
+    const nombre = nombreDirigente();
+    if (!nombre) { alert('Ingresá tu nombre arriba antes de agregar una tarea.'); return; }
+    const input = document.getElementById('tarea-texto-input');
+    const texto = input.value.trim();
+    if (!texto) return;
+    await addDoc(collection(db, "tareas"), {
+      texto, estado: "Nuevo",
+      creadoPor: nombre, creadoEn: serverTimestamp(),
+      editadoPor: nombre, editadoEn: serverTimestamp()
+    });
+    input.value = '';
+  };
+
+  window.cambiarEstadoTarea = async (id, estadoNuevo) => {
+    const nombre = nombreDirigente();
+    if (!nombre) { alert('Ingresá tu nombre arriba antes de editar una tarea.'); return; }
+    await updateDoc(doc(db, "tareas", id), {
+      estado: estadoNuevo, editadoPor: nombre, editadoEn: serverTimestamp()
+    });
+  };
+
+  window.eliminarTarea = async (id) => {
+    if (!confirm('¿Eliminar esta tarea?')) return;
+    await deleteDoc(doc(db, "tareas", id));
+  };
+
+  // ============ MURO DE IDEAS ============
+  let unsubIdeasListener = null;
+
+  window.iniciarMuroIdeas = () => {
+    if (unsubIdeasListener) return;
+    const q = query(collection(db, "muro_ideas"), orderBy("fecha", "desc"));
+    unsubIdeasListener = onSnapshot(q, snap => {
+      const ideas = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      window.renderMuroIdeas(ideas);
+    });
+  };
+
+  window.publicarIdea = async () => {
+    const nombre = document.getElementById('idea-nombre-input').value.trim();
+    const texto = document.getElementById('idea-texto-input').value.trim();
+    if (!nombre) { alert('Aclará tu nombre para publicar la idea.'); return; }
+    if (!texto) { alert('Escribí tu idea antes de publicar.'); return; }
+    await addDoc(collection(db, "muro_ideas"), { nombre, texto, fecha: serverTimestamp() });
+    document.getElementById('idea-texto-input').value = '';
+    localStorage.setItem('dirigente_nombre', nombre);
+  };
+
+  window.eliminarIdea = async (id) => {
+    if (!confirm('¿Eliminar esta idea?')) return;
+    await deleteDoc(doc(db, "muro_ideas", id));
   };
 
   window._presentesInit = () => { actualizarEstadoDirigente(); };
@@ -469,23 +537,110 @@
   }
   .drive-btn:hover { background: var(--azul-med); }
 
-  /* ---- PRESENTES ---- */
-  .presentes-wrap { padding: 20px; }
-  .dirigente-id-bar {
+  /* ---- IDENTIFICACIÓN GLOBAL ---- */
+  .id-bar-global {
     display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
-    background: var(--fondo-cl); border: 1px solid var(--crema);
-    border-radius: 8px; padding: 12px 16px; margin-bottom: 18px;
+    background: var(--fondo-cl); border-bottom: 1px solid var(--crema);
+    padding: 10px 24px;
   }
-  .dirigente-id-bar input {
-    flex: 1; min-width: 160px; padding: 9px 12px; border-radius: 8px;
+  .id-bar-global input {
+    flex: 1; min-width: 220px; max-width: 420px; padding: 8px 12px; border-radius: 8px;
     border: 1.5px solid var(--azul-cl); font-size: 13px; font-family: 'Source Sans 3', sans-serif;
   }
-  .dirigente-id-bar button {
+  .id-bar-global button {
     background: var(--azul); color: white; border: none; border-radius: 8px;
-    padding: 9px 16px; font-size: 13px; font-weight: 700; cursor: pointer;
+    padding: 8px 16px; font-size: 13px; font-weight: 700; cursor: pointer;
     font-family: 'Source Sans 3', sans-serif;
   }
-  #dirigente-nombre-badge { font-size: 12px; color: var(--text-sec); width: 100%; }
+  #dirigente-nombre-badge { font-size: 12px; color: var(--text-sec); }
+
+  /* ---- INICIO: LAYOUT CON SIDEBAR ---- */
+  .inicio-layout { display: grid; grid-template-columns: 1fr 300px; gap: 20px; align-items: start; }
+  .inicio-sidebar { position: sticky; top: 70px; }
+  @media (max-width: 800px) {
+    .inicio-layout { grid-template-columns: 1fr; }
+    .inicio-sidebar { position: static; }
+  }
+  .sidebar-evento-item { padding: 10px 20px; border-bottom: 1px solid var(--fondo); font-size: 12.5px; }
+  .sidebar-evento-item:last-child { border-bottom: none; }
+  .sidebar-evento-item strong { display: block; font-weight: 700; margin-bottom: 2px; }
+  .sidebar-evento-item span { font-size: 11px; color: var(--text-sec); }
+
+  /* ---- MURO DE IDEAS ---- */
+  .muro-ideas-wrap { padding: 20px; }
+  .muro-idea-form { display: flex; flex-direction: column; gap: 8px; margin-bottom: 18px; }
+  .muro-idea-form input, .muro-idea-form textarea {
+    padding: 10px 12px; border-radius: 8px; border: 1.5px solid var(--azul-cl);
+    font-size: 13px; font-family: 'Source Sans 3', sans-serif; resize: vertical;
+  }
+  .muro-idea-form textarea { min-height: 64px; }
+  .idea-card {
+    background: var(--fondo-cl); border: 1px solid var(--crema); border-radius: 10px;
+    padding: 12px 14px; margin-bottom: 10px;
+  }
+  .idea-card .idea-texto { font-size: 13px; line-height: 1.5; margin-bottom: 6px; }
+  .idea-card .idea-meta { font-size: 11px; color: var(--text-sec); display: flex; justify-content: space-between; align-items: center; }
+  .idea-card .idea-borrar { background: none; border: none; color: var(--rojo); font-size: 11px; cursor: pointer; font-weight: 700; }
+
+  /* ---- MINI CALENDARIO COLOREADO ---- */
+  .mini-calendar-header {
+    display: flex; align-items: center; justify-content: space-between;
+    font-weight: 700; font-size: 14px; color: var(--azul); margin-bottom: 8px;
+  }
+  .mini-cal-nav {
+    background: var(--azul-cl); border: none; color: var(--azul); border-radius: 6px;
+    width: 30px; height: 30px; font-size: 14px; cursor: pointer; font-weight: 700;
+  }
+  .mini-calendar-dias-semana {
+    display: grid; grid-template-columns: repeat(7,1fr); gap: 4px;
+    font-size: 11px; font-weight: 700; color: var(--text-sec); text-align: center; margin-bottom: 4px;
+  }
+  .mini-calendar { display: grid; grid-template-columns: repeat(7,1fr); gap: 4px; }
+  .cal-day {
+    aspect-ratio: 1; display: flex; align-items: center; justify-content: center;
+    border-radius: 6px; font-size: 12px; cursor: pointer; background: var(--fondo-cl);
+    border: 1px solid var(--crema); transition: background 0.15s;
+  }
+  .cal-day.otro-mes { opacity: 0.35; cursor: default; }
+  .cal-day.con-evento { background: var(--amarillo); color: var(--azul); font-weight: 700; border-color: var(--dorado); }
+  .cal-day.hoy { border: 2px solid var(--rojo); font-weight: 700; }
+  .cal-day.seleccionado { outline: 2px solid var(--azul-med); }
+  .cal-day:hover { background: var(--azul-cl); }
+  #mini-calendar-dia-detalle { margin-top: 10px; }
+  .dia-detalle-card {
+    background: var(--fondo-cl); border-left: 3px solid var(--azul-med); border-radius: 8px;
+    padding: 12px 14px; font-size: 13px;
+  }
+  .dia-detalle-card strong { display: block; margin-bottom: 6px; color: var(--text); }
+  .dia-detalle-card .evt { padding: 3px 0; color: var(--text-sec); }
+
+  /* ---- TAREAS ---- */
+  .tarea-nueva-row { display: flex; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; }
+  .tarea-nueva-row input {
+    flex: 1; min-width: 200px; padding: 10px 12px; border-radius: 8px;
+    border: 1.5px solid var(--azul-cl); font-size: 13px; font-family: 'Source Sans 3', sans-serif;
+  }
+  .tareas-columnas { display: grid; grid-template-columns: repeat(3,1fr); gap: 14px; }
+  @media (max-width: 700px) { .tareas-columnas { grid-template-columns: 1fr; } }
+  .tareas-columna-titulo { font-size: 13px; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 2px solid var(--crema); }
+  .col-nuevo { color: var(--azul-med); }
+  .col-pendiente { color: var(--dorado); }
+  .col-completado { color: #2e7d32; }
+  .tarea-card {
+    background: var(--fondo-cl); border: 1px solid var(--crema); border-radius: 10px;
+    padding: 10px 12px; margin-bottom: 8px;
+  }
+  .tarea-card .tarea-texto { font-size: 13px; margin-bottom: 6px; word-break: break-word; }
+  .tarea-card .tarea-meta { font-size: 10.5px; color: var(--text-sec); margin-bottom: 8px; }
+  .tarea-card .tarea-acciones { display: flex; gap: 5px; flex-wrap: wrap; }
+  .tarea-card .tarea-acciones button {
+    background: white; border: 1px solid var(--azul-cl); color: var(--azul-med);
+    border-radius: 6px; padding: 4px 8px; font-size: 10.5px; cursor: pointer; font-weight: 600;
+  }
+  .tarea-card .tarea-eliminar { border-color: var(--rojo-cl); color: var(--rojo); }
+
+  /* ---- PRESENTES ---- */
+  .presentes-wrap { padding: 20px; }
   .presentes-subnav { display: flex; gap: 6px; margin-bottom: 16px; overflow-x: auto; }
   .presentes-subtab {
     flex-shrink: 0; background: white; border: 1.5px solid var(--azul-cl); color: var(--text-sec);
@@ -605,6 +760,12 @@
   Bienvenido/a, Dirigente &nbsp;·&nbsp; <span>Lo que acá se comparte es confidencial del grupo.</span>
 </div>
 
+<div class="id-bar-global">
+  <input id="dirigente-nombre-input" placeholder="Tu nombre (para identificarte en Tareas, Muro de Ideas y Presentes)">
+  <button onclick="guardarNombreDirigente()">Guardar</button>
+  <span id="dirigente-nombre-badge"></span>
+</div>
+
 <!-- TABS DE NAVEGACIÓN -->
 <nav class="nav-tabs">
   <div class="nav-tabs-inner">
@@ -621,67 +782,66 @@
   <!-- =================== INICIO =================== -->
   <div class="tab-panel active" id="tab-inicio">
 
-    <div class="tools-grid">
-      <a class="tool-card" href="https://drive.google.com/drive/folders/10gAupj885xJgPfSgXiWDBIQhj31q_b2v?usp=sharing" target="_blank">
-        <div class="tool-icon-wrap bg-amari">📁</div>
-        <h3>Documentos y Archivos</h3>
-        <p>Planillas, formularios, manuales y recursos del grupo en Google Drive.</p>
-        <span class="tool-link">Abrir Drive →</span>
-      </a>
-      <a class="tool-card" onclick="showTab('calendario')" href="#" onclick="return false;">
-        <div class="tool-icon-wrap bg-azul">📅</div>
-        <h3>Calendario del Grupo</h3>
-        <p>Actividades, reuniones y eventos. Todos los dirigentes pueden agregar eventos.</p>
-        <span class="tool-link">Ver calendario →</span>
-      </a>
-      <a class="tool-card" onclick="showTab('tareas')" href="#" onclick="return false;">
-        <div class="tool-icon-wrap bg-amari">✅</div>
-        <h3>Tareas Pendientes</h3>
-        <p>Lista colaborativa en tiempo real. Editá desde cualquier dispositivo.</p>
-        <span class="tool-link">Ver tareas →</span>
-      </a>
-      <a class="tool-card" onclick="showTab('presentes')" href="#" onclick="return false;">
-        <div class="tool-icon-wrap bg-rojo">📋</div>
-        <h3>Presentes por Rama</h3>
-        <p>Tomá lista, cargá jóvenes, mirá cumpleaños y métricas de presentismo.</p>
-        <span class="tool-link">Ir a Presentes →</span>
-      </a>
-      <a class="tool-card" href="https://chat.google.com/" target="_blank">
-        <div class="tool-icon-wrap bg-verde">💬</div>
-        <h3>Chat de Dirigentes</h3>
-        <p>Coordinación rápida del grupo por Google Chat.</p>
-        <span class="tool-link">Abrir Chat →</span>
-      </a>
-    </div>
+    <div class="inicio-layout">
+      <div class="inicio-principal">
 
-    <!-- Próximos eventos en inicio -->
-    <div class="card">
-      <div class="card-header">
-        <div class="icon icon-azul">📅</div>
-        <h2>Próximos Eventos</h2>
-        <a href="#" onclick="showTab('calendario'); return false;" class="card-link">Ver calendario completo →</a>
+        <div class="tools-grid">
+          <a class="tool-card" href="https://drive.google.com/drive/folders/10gAupj885xJgPfSgXiWDBIQhj31q_b2v?usp=sharing" target="_blank">
+            <div class="tool-icon-wrap bg-amari">📁</div>
+            <h3>Documentos y Archivos</h3>
+            <p>Planillas, formularios, manuales y recursos del grupo en Google Drive.</p>
+            <span class="tool-link">Abrir Drive →</span>
+          </a>
+          <a class="tool-card" onclick="showTab('calendario')" href="#" onclick="return false;">
+            <div class="tool-icon-wrap bg-azul">📅</div>
+            <h3>Calendario del Grupo</h3>
+            <p>Actividades, reuniones y eventos. Todos los dirigentes pueden agregar eventos.</p>
+            <span class="tool-link">Ver calendario →</span>
+          </a>
+          <a class="tool-card" onclick="showTab('tareas')" href="#" onclick="return false;">
+            <div class="tool-icon-wrap bg-amari">✅</div>
+            <h3>Tareas Pendientes</h3>
+            <p>Lista colaborativa en tiempo real. Editá desde cualquier dispositivo.</p>
+            <span class="tool-link">Ver tareas →</span>
+          </a>
+          <a class="tool-card" onclick="showTab('presentes')" href="#" onclick="return false;">
+            <div class="tool-icon-wrap bg-rojo">📋</div>
+            <h3>Presentes por Rama</h3>
+            <p>Tomá lista, cargá jóvenes, mirá cumpleaños y métricas de presentismo.</p>
+            <span class="tool-link">Ir a Presentes →</span>
+          </a>
+        </div>
+
+        <!-- Muro de Ideas -->
+        <div class="card">
+          <div class="card-header">
+            <div class="icon icon-rojo">💡</div>
+            <h2>Muro de Ideas</h2>
+          </div>
+          <div class="muro-ideas-wrap">
+            <div class="muro-idea-form">
+              <input id="idea-nombre-input" placeholder="Tu nombre">
+              <textarea id="idea-texto-input" placeholder="Escribí tu idea para el grupo..." maxlength="300"></textarea>
+              <button class="btn-presentes-accion" onclick="publicarIdea()">📌 Publicar idea</button>
+            </div>
+            <div id="muro-ideas-lista"><p class="presentes-empty">Cargando ideas...</p></div>
+          </div>
+        </div>
+
       </div>
-      <a class="evento-item" href="#" onclick="showTab('calendario'); return false;">
-        <div class="evento-dot dot-azul"></div>
-        <div class="evento-info">
-          <strong>Reunión semanal — Lobatos</strong>
-          <span>Sábado 10 May · 10:00hs</span>
+
+      <!-- Sidebar: próximos eventos reales del calendario -->
+      <aside class="inicio-sidebar">
+        <div class="card">
+          <div class="card-header">
+            <div class="icon icon-azul">📅</div>
+            <h2>Próximos Eventos</h2>
+          </div>
+          <div id="sidebar-eventos-lista" style="padding:6px 0 10px">
+            <p class="presentes-empty">Cargando eventos...</p>
+          </div>
         </div>
-      </a>
-      <a class="evento-item" href="#" onclick="showTab('calendario'); return false;">
-        <div class="evento-dot dot-rojo"></div>
-        <div class="evento-info">
-          <strong>Reunión de dirigentes</strong>
-          <span>Sábado 17 May · 17:00hs</span>
-        </div>
-      </a>
-      <a class="evento-item" href="#" onclick="showTab('calendario'); return false;">
-        <div class="evento-dot dot-amari"></div>
-        <div class="evento-info">
-          <strong>Campamento Regional</strong>
-          <span>23–25 May</span>
-        </div>
-      </a>
+      </aside>
     </div>
 
   </div>
@@ -695,13 +855,26 @@
         <a href="https://calendar.google.com/calendar/r?cid=fd9cc70586453efac61877175e23b80a276e620999f6bbe172032204721fa6f7%40group.calendar.google.com" target="_blank" class="card-link">Abrir en Google Calendar →</a>
       </div>
       <div class="calendar-wrap">
+        <div class="mini-calendar-header">
+          <button class="mini-cal-nav" onclick="cambiarMesCalendario(-1)">←</button>
+          <span id="mini-cal-titulo">—</span>
+          <button class="mini-cal-nav" onclick="cambiarMesCalendario(1)">→</button>
+        </div>
+        <div class="mini-calendar-dias-semana">
+          <span>Do</span><span>Lu</span><span>Ma</span><span>Mi</span><span>Ju</span><span>Vi</span><span>Sa</span>
+        </div>
+        <div class="mini-calendar" id="mini-calendar-grid">
+          <p class="presentes-empty">Cargando calendario...</p>
+        </div>
+        <div id="mini-calendar-dia-detalle"></div>
+
         <iframe
           src="https://calendar.google.com/calendar/embed?src=fd9cc70586453efac61877175e23b80a276e620999f6bbe172032204721fa6f7%40group.calendar.google.com&ctz=America%2FArgentina%2FBuenos_Aires&hl=es&showTitle=0&showNav=1&showDate=1&showPrint=0&showTabs=1&showCalendars=0&mode=MONTH"
-          style="border:0" height="620" frameborder="0" scrolling="no">
+          style="border:0;margin-top:16px" height="620" frameborder="0" scrolling="no">
         </iframe>
         <div class="calendar-note">
           <strong>¿Cómo agregar o editar eventos?</strong>
-          El calendario es compartido. Para agregar eventos, abrilo en Google Calendar con el botón de arriba a la derecha. Cualquier dirigente con acceso puede crear, editar o eliminar eventos directamente desde ahí.
+          El calendario es compartido. Para agregar eventos, abrilo en Google Calendar con el botón de arriba a la derecha. Cualquier dirigente con acceso puede crear, editar o eliminar eventos directamente desde ahí. Los días marcados en color arriba tienen algo cargado ese día.
         </div>
       </div>
     </div>
@@ -715,18 +888,23 @@
         <h2>Tareas Pendientes del Grupo</h2>
       </div>
       <div class="tareas-wrap">
-        <a href="https://keep.google.com/" target="_blank" class="keep-btn">
-          📝 &nbsp;Abrir lista en Google Keep
-        </a>
-        <div class="keep-info">
-          <strong>¿Cómo funciona la lista colaborativa?</strong>
-          Google Keep permite crear listas de tareas que todos los dirigentes pueden editar en tiempo real desde el celular o la computadora.
-          <ol>
-            <li>Abrí Google Keep con el botón de arriba</li>
-            <li>Buscá la nota llamada <em>"Tareas — Grupo Scout Pringles"</em></li>
-            <li>Si no existe todavía, creá una nota nueva con ese nombre y compartila con los mails de todos los dirigentes (ícono de persona arriba a la derecha)</li>
-            <li>Cada dirigente que entre verá y podrá editar la misma lista</li>
-          </ol>
+        <div class="tarea-nueva-row">
+          <input id="tarea-texto-input" placeholder="Escribí una tarea nueva..." maxlength="200">
+          <button class="btn-presentes-accion" onclick="agregarTarea()">➕ Agregar</button>
+        </div>
+        <div class="tareas-columnas">
+          <div class="tareas-columna">
+            <h4 class="tareas-columna-titulo col-nuevo">🆕 Nuevo</h4>
+            <div id="tareas-lista-nuevo"><p class="presentes-empty">Sin tareas.</p></div>
+          </div>
+          <div class="tareas-columna">
+            <h4 class="tareas-columna-titulo col-pendiente">🕓 Pendiente</h4>
+            <div id="tareas-lista-pendiente"><p class="presentes-empty">Sin tareas.</p></div>
+          </div>
+          <div class="tareas-columna">
+            <h4 class="tareas-columna-titulo col-completado">✅ Completado</h4>
+            <div id="tareas-lista-completado"><p class="presentes-empty">Sin tareas.</p></div>
+          </div>
         </div>
       </div>
     </div>
@@ -740,12 +918,6 @@
         <h2>Presentes por Rama</h2>
       </div>
       <div class="presentes-wrap">
-
-        <div class="dirigente-id-bar">
-          <input id="dirigente-nombre-input" placeholder="Tu nombre (para registrar quién tomó lista)">
-          <button onclick="guardarNombreDirigente()">Guardar</button>
-          <span id="dirigente-nombre-badge"></span>
-        </div>
 
         <div class="presentes-subnav">
           <button class="presentes-subtab active" onclick="showPresentesSub('lista',this)">📋 Tomar lista</button>
@@ -846,6 +1018,8 @@
     const map = { inicio: 0, calendario: 1, tareas: 2, presentes: 3, documentos: 4 };
     btns[map[name]].classList.add('active');
     if (name === 'presentes' && window._presentesInit) window._presentesInit();
+    if (name === 'tareas' && window.iniciarTareas) window.iniciarTareas();
+    if (name === 'calendario') renderizarMiniCalendario();
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
@@ -1118,6 +1292,183 @@
         <strong>Resumen del período:</strong> ${totalReuniones} reunión(es) con asistencia registrada · promedio de ${promedio} presentes por reunión.
       </div>`;
   };
+
+  function escapeHtml(s) {
+    return String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  function formatFechaCorta(ts) {
+    if (!ts || !ts.toDate) return '';
+    return ts.toDate().toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  }
+
+  // ===================== TAREAS: render =====================
+  window.renderTareas = (tareas) => {
+    const estados = { Nuevo: [], Pendiente: [], Completado: [] };
+    tareas.forEach(t => { if (estados[t.estado]) estados[t.estado].push(t); });
+
+    Object.keys(estados).forEach(estado => {
+      const cont = document.getElementById('tareas-lista-' + estado.toLowerCase());
+      if (!cont) return;
+      if (estados[estado].length === 0) { cont.innerHTML = `<p class="presentes-empty">Sin tareas.</p>`; return; }
+      cont.innerHTML = estados[estado].map(t => {
+        const otros = ['Nuevo','Pendiente','Completado'].filter(e => e !== t.estado);
+        const meta = t.editadoPor && t.editadoPor !== t.creadoPor
+          ? `Cargó ${escapeHtml(t.creadoPor)} · editó ${escapeHtml(t.editadoPor)} (${formatFechaCorta(t.editadoEn)})`
+          : `Cargó ${escapeHtml(t.creadoPor)} (${formatFechaCorta(t.creadoEn)})`;
+        return `
+          <div class="tarea-card">
+            <div class="tarea-texto">${escapeHtml(t.texto)}</div>
+            <div class="tarea-meta">${meta}</div>
+            <div class="tarea-acciones">
+              ${otros.map(e => `<button onclick="cambiarEstadoTarea('${t.id}','${e}')">${e}</button>`).join('')}
+              <button class="tarea-eliminar" onclick="eliminarTarea('${t.id}')">🗑️</button>
+            </div>
+          </div>`;
+      }).join('');
+    });
+  };
+
+  // ===================== MURO DE IDEAS: render =====================
+  window.renderMuroIdeas = (ideas) => {
+    const cont = document.getElementById('muro-ideas-lista');
+    if (!cont) return;
+    if (ideas.length === 0) { cont.innerHTML = `<p class="presentes-empty">Todavía no hay ideas publicadas. ¡Sé el primero!</p>`; return; }
+    cont.innerHTML = ideas.map(i => `
+      <div class="idea-card">
+        <div class="idea-texto">${escapeHtml(i.texto)}</div>
+        <div class="idea-meta">
+          <span><strong>${escapeHtml(i.nombre)}</strong> · ${formatFechaCorta(i.fecha)}</span>
+          <button class="idea-borrar" onclick="eliminarIdea('${i.id}')">Eliminar</button>
+        </div>
+      </div>`).join('');
+  };
+
+  // ===================== CALENDARIO: mini-calendario coloreado + sidebar =====================
+  // ⚠️ Para que esto funcione hace falta una API Key de Google Calendar (ver instrucciones que te pasé aparte).
+  const CALENDAR_ID = 'fd9cc70586453efac61877175e23b80a276e620999f6bbe172032204721fa6f7@group.calendar.google.com';
+  const CALENDAR_API_KEY = 'AIzaSyD33Q1yV9B2HF59U1VjUy8uLCHkJQ3RKg4';
+
+  let calMesActual = new Date().getMonth();
+  let calAnioActual = new Date().getFullYear();
+  let calEventosDelMes = {}; // { "2026-05-10": [ {summary,...}, ... ] }
+
+  async function fetchEventosGoogle(timeMinISO, timeMaxISO) {
+    if (!CALENDAR_API_KEY || CALENDAR_API_KEY.startsWith('PONÉ')) return null;
+    try {
+      const url = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(CALENDAR_ID)}/events?key=${CALENDAR_API_KEY}&timeMin=${encodeURIComponent(timeMinISO)}&timeMax=${encodeURIComponent(timeMaxISO)}&singleEvents=true&orderBy=startTime&maxResults=250`;
+      const res = await fetch(url);
+      if (!res.ok) { console.error('Error Calendar API:', await res.text()); return null; }
+      const data = await res.json();
+      return data.items || [];
+    } catch (e) { console.error(e); return null; }
+  }
+
+  function fechaEventoAISO(ev) {
+    const raw = ev.start?.date || ev.start?.dateTime;
+    if (!raw) return null;
+    return raw.slice(0, 10);
+  }
+
+  window.cambiarMesCalendario = (delta) => {
+    calMesActual += delta;
+    if (calMesActual < 0) { calMesActual = 11; calAnioActual--; }
+    if (calMesActual > 11) { calMesActual = 0; calAnioActual++; }
+    renderizarMiniCalendario();
+  };
+
+  async function renderizarMiniCalendario() {
+    const grid = document.getElementById('mini-calendar-grid');
+    const titulo = document.getElementById('mini-cal-titulo');
+    if (!grid) return;
+
+    const meses = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+    titulo.textContent = `${meses[calMesActual]} ${calAnioActual}`;
+
+    const primerDia = new Date(calAnioActual, calMesActual, 1);
+    const ultimoDia = new Date(calAnioActual, calMesActual + 1, 0);
+    const inicioGrid = new Date(primerDia); inicioGrid.setDate(inicioGrid.getDate() - primerDia.getDay());
+    const finGrid = new Date(ultimoDia); finGrid.setDate(finGrid.getDate() + (6 - ultimoDia.getDay()));
+
+    const eventos = await fetchEventosGoogle(inicioGrid.toISOString(), new Date(finGrid.getTime() + 86400000).toISOString());
+    calEventosDelMes = {};
+    if (eventos) {
+      eventos.forEach(ev => {
+        const f = fechaEventoAISO(ev);
+        if (!f) return;
+        if (!calEventosDelMes[f]) calEventosDelMes[f] = [];
+        calEventosDelMes[f].push(ev);
+      });
+    }
+
+    const hoyISO = new Date().toISOString().slice(0,10);
+    let celdas = '';
+    let cursor = new Date(inicioGrid);
+    while (cursor <= finGrid) {
+      const iso = cursor.toISOString().slice(0,10);
+      const esOtroMes = cursor.getMonth() !== calMesActual;
+      const tieneEvento = !!calEventosDelMes[iso];
+      const clases = ['cal-day'];
+      if (esOtroMes) clases.push('otro-mes');
+      if (tieneEvento) clases.push('con-evento');
+      if (iso === hoyISO) clases.push('hoy');
+      celdas += `<div class="${clases.join(' ')}" onclick="mostrarDiaCalendario('${iso}')">${cursor.getDate()}</div>`;
+      cursor.setDate(cursor.getDate() + 1);
+    }
+
+    if (!eventos && (!CALENDAR_API_KEY || CALENDAR_API_KEY.startsWith('PONÉ'))) {
+      grid.innerHTML = celdas;
+      document.getElementById('mini-calendar-dia-detalle').innerHTML =
+        `<div class="dia-detalle-card">⚠️ Para colorear los días con eventos hace falta configurar la API Key de Google Calendar en el código (buscá <em>CALENDAR_API_KEY</em>). El calendario de abajo sigue funcionando normalmente mientras tanto.</div>`;
+    } else {
+      grid.innerHTML = celdas;
+    }
+  }
+
+  window.mostrarDiaCalendario = (iso) => {
+    const wrap = document.getElementById('mini-calendar-dia-detalle');
+    const eventos = calEventosDelMes[iso];
+    document.querySelectorAll('.cal-day').forEach(d => d.classList.remove('seleccionado'));
+    if (!eventos || eventos.length === 0) {
+      wrap.innerHTML = `<div class="dia-detalle-card"><strong>${iso}</strong>Sin eventos cargados este día.</div>`;
+      return;
+    }
+    wrap.innerHTML = `<div class="dia-detalle-card"><strong>${iso}</strong>${
+      eventos.map(ev => `<div class="evt">• ${escapeHtml(ev.summary || '(sin título)')}</div>`).join('')
+    }</div>`;
+  };
+
+  // ===================== SIDEBAR: próximos eventos reales =====================
+  async function cargarEventosSidebar() {
+    const cont = document.getElementById('sidebar-eventos-lista');
+    if (!cont) return;
+    if (!CALENDAR_API_KEY || CALENDAR_API_KEY.startsWith('PONÉ')) {
+      cont.innerHTML = `<p class="presentes-empty">Configurá la API Key de Google Calendar para ver los próximos eventos acá.</p>`;
+      return;
+    }
+    const ahora = new Date();
+    const en90dias = new Date(ahora.getTime() + 90 * 86400000);
+    const eventos = await fetchEventosGoogle(ahora.toISOString(), en90dias.toISOString());
+    if (!eventos || eventos.length === 0) {
+      cont.innerHTML = `<p class="presentes-empty">No hay eventos próximos cargados.</p>`;
+      return;
+    }
+    cont.innerHTML = eventos.slice(0, 6).map(ev => {
+      const raw = ev.start?.dateTime || ev.start?.date;
+      const d = new Date(raw);
+      const fechaTxt = ev.start?.dateTime
+        ? d.toLocaleDateString('es-AR', { weekday:'short', day:'2-digit', month:'short' }) + ' · ' + d.toLocaleTimeString('es-AR', { hour:'2-digit', minute:'2-digit' })
+        : d.toLocaleDateString('es-AR', { weekday:'short', day:'2-digit', month:'short' });
+      return `<div class="sidebar-evento-item"><strong>${escapeHtml(ev.summary || '(sin título)')}</strong><span>${fechaTxt}</span></div>`;
+    }).join('');
+  }
+
+  // ===================== INICIALIZACIÓN GENERAL =====================
+  document.addEventListener('DOMContentLoaded', () => {
+    if (window._presentesInit) window._presentesInit();
+    if (window.iniciarMuroIdeas) window.iniciarMuroIdeas();
+    cargarEventosSidebar();
+  });
 </script>
 
 </body>
