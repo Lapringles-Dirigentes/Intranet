@@ -6,6 +6,7 @@
 <title>Intranet — Grupo Scout Cnel. Juan Pascual Pringles</title>
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Source+Sans+3:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
   import { getFirestore, doc, getDoc, setDoc, addDoc, collection,
@@ -182,6 +183,33 @@
       : query(collection(db, "asistencias"), where("fecha", ">=", desde), where("fecha", "<=", hasta));
     const snap = await getDocs(q);
     return snap.docs.map(d => d.data());
+  };
+
+  // --- Importación masiva desde Excel: recibe un array de objetos ya validados ---
+  window.confirmarImportacionExcel = async (filas) => {
+    const CHUNK = 400; // Firestore permite hasta 500 operaciones por batch
+    let importados = 0;
+    for (let i = 0; i < filas.length; i += CHUNK) {
+      const lote = filas.slice(i, i + CHUNK);
+      const batch = writeBatch(db);
+      lote.forEach(f => {
+        const ref = doc(collection(db, "jovenes"));
+        batch.set(ref, {
+          nombre: f.nombre,
+          apellido: f.apellido,
+          fechaNacimiento: f.fechaNacimiento || "",
+          rama: f.rama,
+          contacto: f.contacto || "",
+          activo: true,
+          historialRamas: [{ rama: f.rama, desde: new Date().toISOString().slice(0,10), hasta: null }],
+          creadoEn: serverTimestamp(),
+          actualizadoEn: serverTimestamp()
+        });
+      });
+      await batch.commit();
+      importados += lote.length;
+    }
+    return importados;
   };
 
   window._presentesInit = () => { actualizarEstadoDirigente(); };
@@ -522,6 +550,26 @@
   }
   .info-resumen strong { color: var(--text); }
 
+  /* ---- IMPORTAR EXCEL ---- */
+  .import-preview-card {
+    background: var(--fondo-cl); border: 1px solid var(--crema); border-radius: var(--radius);
+    padding: 16px; margin-bottom: 16px;
+  }
+  .import-preview-card h4 { font-size: 14px; margin-bottom: 10px; color: var(--text); }
+  .import-preview-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 12px; }
+  .import-preview-table th {
+    text-align: left; padding: 6px 8px; background: var(--azul-cl); color: var(--azul);
+    font-weight: 700; position: sticky; top: 0;
+  }
+  .import-preview-table td { padding: 6px 8px; border-bottom: 1px solid var(--crema); }
+  .import-preview-table tr.fila-invalida td { background: var(--rojo-cl); color: var(--rojo); }
+  .import-preview-scroll { max-height: 320px; overflow-y: auto; border: 1px solid var(--crema); border-radius: 8px; margin-bottom: 12px; }
+  .import-preview-resumen { font-size: 13px; margin-bottom: 12px; }
+  .import-preview-resumen .ok { color: #2e7d32; font-weight: 700; }
+  .import-preview-resumen .bad { color: var(--rojo); font-weight: 700; }
+  .import-preview-acciones { display: flex; gap: 8px; }
+  .import-preview-acciones button.cancelar { background: #aaa; }
+
   /* ---- FOOTER ---- */
   footer {
     text-align: center; padding: 20px; font-size: 12px;
@@ -731,8 +779,11 @@
               <option value="Rovers">⚓ Rovers</option>
             </select>
             <button class="btn-presentes-accion" onclick="abrirFormJoven()">➕ Agregar joven</button>
+            <button class="btn-presentes-accion" onclick="document.getElementById('excel-input').click()">📤 Importar Excel</button>
             <button class="btn-presentes-accion" onclick="exportarJovenesCSV()">⬇️ Descargar CSV</button>
+            <input type="file" id="excel-input" accept=".xlsx,.xls" style="display:none" onchange="importarExcel(event)">
           </div>
+          <div id="import-preview-wrap"></div>
           <div id="cumples-proximos"></div>
           <div id="form-joven-wrap"></div>
           <div id="jovenes-lista-wrap"></div>
@@ -894,6 +945,136 @@
     a.href = URL.createObjectURL(blob);
     a.download = `jovenes_pringles_${new Date().toISOString().slice(0,10)}.csv`;
     a.click();
+  };
+
+  // ===================== IMPORTAR EXCEL =====================
+  const RAMAS_VALIDAS = ["Castores","Manada","Scouts","Caminantes","Rovers"];
+
+  function normalizarTexto(s) {
+    return String(s || "").trim().toLowerCase()
+      .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  }
+
+  function detectarRama(valor) {
+    const v = normalizarTexto(valor);
+    return RAMAS_VALIDAS.find(r => normalizarTexto(r) === v) || null;
+  }
+
+  function fechaAISO(valor) {
+    if (!valor) return "";
+    if (valor instanceof Date && !isNaN(valor)) {
+      const y = valor.getFullYear(), m = String(valor.getMonth()+1).padStart(2,'0'), d = String(valor.getDate()).padStart(2,'0');
+      return `${y}-${m}-${d}`;
+    }
+    const s = String(valor).trim();
+    // yyyy-mm-dd
+    let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if (m) return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
+    // dd/mm/yyyy o dd-mm-yyyy
+    m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+    if (m) return `${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`;
+    return "";
+  }
+
+  function buscarValor(fila, claves) {
+    const keys = Object.keys(fila);
+    for (const clave of claves) {
+      const encontrada = keys.find(k => normalizarTexto(k) === clave);
+      if (encontrada) return fila[encontrada];
+    }
+    return "";
+  }
+
+  let filasImportacionValidas = [];
+
+  window.importarExcel = (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const data = new Uint8Array(e.target.result);
+      const wb = XLSX.read(data, { type: 'array', cellDates: true });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const filas = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+
+      const procesadas = filas.map(f => {
+        const nombre = String(buscarValor(f, ['nombre']) || '').trim();
+        const apellido = String(buscarValor(f, ['apellido']) || '').trim();
+        const fechaRaw = buscarValor(f, ['fecha nacimiento','fechanacimiento','fecha de nacimiento','nacimiento','fecha']);
+        const fechaNacimiento = fechaAISO(fechaRaw);
+        const ramaRaw = buscarValor(f, ['rama']);
+        const rama = detectarRama(ramaRaw);
+        const contacto = String(buscarValor(f, ['contacto','telefono','teléfono','email','mail']) || '').trim();
+
+        const errores = [];
+        if (!nombre) errores.push('falta nombre');
+        if (!apellido) errores.push('falta apellido');
+        if (!rama) errores.push('rama inválida: "' + ramaRaw + '"');
+        if (fechaRaw && !fechaNacimiento) errores.push('fecha inválida');
+
+        return { nombre, apellido, fechaNacimiento, rama, contacto, errores, valida: errores.length === 0 };
+      });
+
+      mostrarPreviewImportacion(procesadas);
+      event.target.value = ''; // permite volver a elegir el mismo archivo si hace falta
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  function mostrarPreviewImportacion(filas) {
+    const wrap = document.getElementById('import-preview-wrap');
+    const validas = filas.filter(f => f.valida);
+    filasImportacionValidas = validas;
+
+    if (filas.length === 0) {
+      wrap.innerHTML = `<div class="import-preview-card"><p class="presentes-empty">El archivo no tiene filas para importar.</p></div>`;
+      return;
+    }
+
+    const filasHtml = filas.map(f => `
+      <tr class="${f.valida ? '' : 'fila-invalida'}">
+        <td>${f.nombre || '—'}</td>
+        <td>${f.apellido || '—'}</td>
+        <td>${f.fechaNacimiento || '—'}</td>
+        <td>${f.rama || '—'}</td>
+        <td>${f.contacto || '—'}</td>
+        <td>${f.valida ? '✅' : '⚠️ ' + f.errores.join(', ')}</td>
+      </tr>`).join('');
+
+    wrap.innerHTML = `
+      <div class="import-preview-card">
+        <h4>📤 Vista previa de la importación</h4>
+        <div class="import-preview-resumen">
+          <span class="ok">${validas.length} listas para importar</span>
+          ${filas.length - validas.length > 0 ? ` · <span class="bad">${filas.length - validas.length} con errores (no se importan)</span>` : ''}
+        </div>
+        <div class="import-preview-scroll">
+          <table class="import-preview-table">
+            <thead><tr><th>Nombre</th><th>Apellido</th><th>Nacimiento</th><th>Rama</th><th>Contacto</th><th>Estado</th></tr></thead>
+            <tbody>${filasHtml}</tbody>
+          </table>
+        </div>
+        <div class="import-preview-acciones">
+          <button class="btn-presentes-accion" onclick="ejecutarImportacion()" ${validas.length === 0 ? 'disabled' : ''}>✅ Confirmar importación de ${validas.length}</button>
+          <button class="btn-presentes-accion cancelar" onclick="cancelarImportacion()">Cancelar</button>
+        </div>
+      </div>`;
+  }
+
+  window.cancelarImportacion = () => {
+    document.getElementById('import-preview-wrap').innerHTML = '';
+    filasImportacionValidas = [];
+  };
+
+  window.ejecutarImportacion = async () => {
+    if (filasImportacionValidas.length === 0) return;
+    if (!confirm(`¿Importar ${filasImportacionValidas.length} jóvenes?`)) return;
+    const wrap = document.getElementById('import-preview-wrap');
+    wrap.innerHTML = `<div class="import-preview-card"><p class="presentes-empty">Importando, esperá un momento...</p></div>`;
+    const importados = await window.confirmarImportacionExcel(filasImportacionValidas);
+    wrap.innerHTML = `<div class="import-preview-card"><p class="presentes-empty">✅ Se importaron ${importados} jóvenes correctamente.</p></div>`;
+    filasImportacionValidas = [];
+    window.cargarJovenes();
   };
 
   let chartPresentismo = null;
