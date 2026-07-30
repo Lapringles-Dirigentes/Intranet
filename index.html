@@ -26,13 +26,13 @@
     from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
   const firebaseConfig = {
-    apiKey: "AIzaSyAbNlr9T-q9QHosYX2UMziLQ2Qrl_yrQP8",
-    authDomain: "scout-pringles.firebaseapp.com",
-    projectId: "scout-pringles",
-    storageBucket: "scout-pringles.firebasestorage.app",
-    messagingSenderId: "655976644512",
-    appId: "1:655976644512:web:2666d2483351087b866ec5",
-    measurementId: "G-GEKS5046KG"
+    apiKey: "AIzaSyAlaJcAlbtWcFj-u3plcXctjxvUqZFWKgE",
+    authDomain: "intranet-pringles.firebaseapp.com",
+    projectId: "intranet-pringles",
+    storageBucket: "intranet-pringles.firebasestorage.app",
+    messagingSenderId: "1019491462392",
+    appId: "1:1019491462392:web:ce778cf5333d37719cdf0d",
+    measurementId: "G-70GBLXZC3Z"
   };
 
   const app = initializeApp(firebaseConfig);
@@ -92,6 +92,10 @@
       jovenesCache = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       window.renderJovenesLista();
       window.renderCumplesProximos();
+    }, err => {
+      console.error('Error cargando jóvenes:', err);
+      const wrap = document.getElementById('jovenes-lista-wrap');
+      if (wrap) wrap.innerHTML = `<p class="presentes-empty">⚠️ Error al cargar: ${err.message}</p>`;
     });
   };
 
@@ -146,14 +150,21 @@
     const wrap = document.getElementById("lista-asistencia-wrap");
     if (!rama || !fecha) { wrap.innerHTML = `<p class="presentes-empty">Elegí rama y fecha para tomar lista.</p>`; return; }
 
-    const qJ = query(collection(db, "jovenes"), where("rama", "==", rama), where("activo", "==", true), orderBy("apellido"));
-    const snapJ = await getDocs(qJ);
-    const jovenes = snapJ.docs.map(d => ({ id: d.id, ...d.data() }));
+    wrap.innerHTML = `<p class="presentes-empty">Cargando...</p>`;
+    let jovenes, marcados = {};
+    try {
+      const qJ = query(collection(db, "jovenes"), where("rama", "==", rama), where("activo", "==", true), orderBy("apellido"));
+      const snapJ = await getDocs(qJ);
+      jovenes = snapJ.docs.map(d => ({ id: d.id, ...d.data() }));
 
-    const qA = query(collection(db, "asistencias"), where("rama", "==", rama), where("fecha", "==", fecha));
-    const snapA = await getDocs(qA);
-    const marcados = {};
-    snapA.forEach(d => { marcados[d.data().jovenId] = d.data().presente; });
+      const qA = query(collection(db, "asistencias"), where("rama", "==", rama), where("fecha", "==", fecha));
+      const snapA = await getDocs(qA);
+      snapA.forEach(d => { marcados[d.data().jovenId] = d.data().presente; });
+    } catch (err) {
+      console.error('Error cargando lista:', err);
+      wrap.innerHTML = `<p class="presentes-empty">⚠️ Error al cargar: ${err.message}</p>`;
+      return;
+    }
 
     if (jovenes.length === 0) {
       wrap.innerHTML = `<p class="presentes-empty">No hay jóvenes cargados en ${rama}.</p>`;
@@ -234,6 +245,10 @@
     unsubTareasListener = onSnapshot(q, snap => {
       const tareas = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       window.renderTareas(tareas);
+    }, err => {
+      console.error('Error cargando tareas:', err);
+      const cont = document.getElementById('tareas-lista-nuevo');
+      if (cont) cont.innerHTML = `<p class="presentes-empty">⚠️ Error: ${err.message}</p>`;
     });
   };
 
@@ -273,6 +288,10 @@
     unsubIdeasListener = onSnapshot(q, snap => {
       const ideas = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       window.renderMuroIdeas(ideas);
+    }, err => {
+      console.error('Error cargando muro de ideas:', err);
+      const cont = document.getElementById('muro-ideas-lista');
+      if (cont) cont.innerHTML = `<p class="presentes-empty">⚠️ Error: ${err.message}</p>`;
     });
   };
 
@@ -1292,10 +1311,15 @@
     if (!confirm(`¿Importar ${filasImportacionValidas.length} jóvenes?`)) return;
     const wrap = document.getElementById('import-preview-wrap');
     wrap.innerHTML = `<div class="import-preview-card"><p class="presentes-empty">Importando, esperá un momento...</p></div>`;
-    const importados = await window.confirmarImportacionExcel(filasImportacionValidas);
-    wrap.innerHTML = `<div class="import-preview-card"><p class="presentes-empty">✅ Se importaron ${importados} jóvenes correctamente.</p></div>`;
-    filasImportacionValidas = [];
-    window.cargarJovenes();
+    try {
+      const importados = await window.confirmarImportacionExcel(filasImportacionValidas);
+      wrap.innerHTML = `<div class="import-preview-card"><p class="presentes-empty">✅ Se importaron ${importados} jóvenes correctamente.</p></div>`;
+      filasImportacionValidas = [];
+      window.cargarJovenes();
+    } catch (err) {
+      console.error('Error importando:', err);
+      wrap.innerHTML = `<div class="import-preview-card"><p class="presentes-empty">⚠️ Error al importar: ${err.message}<br>Revisá las reglas de Firestore (colección "jovenes" debe permitir escritura).</p></div>`;
+    }
   };
 
   let chartPresentismo = null;
