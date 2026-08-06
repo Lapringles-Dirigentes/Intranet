@@ -18,8 +18,11 @@
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Source+Sans+3:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+  import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged }
+    from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
   import { getFirestore, doc, getDoc, setDoc, addDoc, collection,
     query, orderBy, onSnapshot, serverTimestamp, updateDoc, deleteDoc, getDocs,
     where, writeBatch }
@@ -35,32 +38,73 @@
     measurementId: "G-70GBLXZC3Z"
   };
 
-  const app = initializeApp(firebaseConfig);
-  const db  = getFirestore(app);
+  const app  = initializeApp(firebaseConfig);
+  const db   = getFirestore(app);
+  const auth = getAuth(app);
 
-  // ============ MÓDULO PRESENTES (sin login: usa un nombre guardado en el navegador) ============
+  // EmailJS
+  emailjs.init({ publicKey: "n9IhCF9GdjoIRsDC-" });
+  const EMAILJS_SERVICE_ID  = "MailsPringles";
+  const EMAILJS_TEMPLATE_ID = "template_g5blgxo";
+
+  // Admin "de arranque": siempre admin, no se puede quitar desde la UI
+  const ADMIN_BOOTSTRAP = ["alan.d.fernandez23@gmail.com"];
+
+  let currentUser = null;
+  let esAdminActual = false;
   window.jovenesCache = [];
   let unsubJovenesListener = null;
 
   function nombreDirigente() {
-    return localStorage.getItem('dirigente_nombre') || '';
+    return currentUser ? (currentUser.displayName || currentUser.email) : '';
   }
 
-  window.guardarNombreDirigente = () => {
-    const val = document.getElementById('dirigente-nombre-input').value.trim();
-    localStorage.setItem('dirigente_nombre', val);
-    actualizarEstadoDirigente();
+  window.loginConGoogle = async () => {
+    try {
+      await signInWithPopup(auth, new GoogleAuthProvider());
+    } catch(e) { console.error(e); alert("Error al iniciar sesión. Intentá de nuevo."); }
   };
 
-  function actualizarEstadoDirigente() {
-    const nombre = nombreDirigente();
-    const badge = document.getElementById('dirigente-nombre-badge');
-    if (badge) badge.textContent = nombre ? ('Identificado como: ' + nombre) : 'Todavía no ingresaste tu nombre';
-    const input = document.getElementById('dirigente-nombre-input');
-    if (input && nombre) input.value = nombre;
+  window.logoutIntranet = async () => { await signOut(auth); location.reload(); };
+
+  onAuthStateChanged(auth, async (user) => {
+    if (!user) {
+      currentUser = null; esAdminActual = false;
+      document.getElementById('pantalla-login-intranet').style.display = 'flex';
+      document.getElementById('app-intranet-wrap').style.display = 'none';
+      return;
+    }
+    currentUser = user;
+
+    // Registrar/actualizar este dirigente en la colección "dirigentes" (para el panel de admin)
+    const dRef = doc(db, "dirigentes", user.email);
+    await setDoc(dRef, {
+      email: user.email, nombre: user.displayName || '', foto: user.photoURL || '',
+      ultimoAcceso: serverTimestamp()
+    }, { merge: true });
+
+    // Chequear si es admin
+    esAdminActual = ADMIN_BOOTSTRAP.includes(user.email);
+    if (!esAdminActual) {
+      const aSnap = await getDoc(doc(db, "administradores", user.email));
+      esAdminActual = aSnap.exists();
+    }
+    window._esAdmin = esAdminActual;
+    window._currentUser = user;
+
+    document.getElementById('pantalla-login-intranet').style.display = 'none';
+    document.getElementById('app-intranet-wrap').style.display = 'block';
+    document.getElementById('dirigente-nombre-badge').textContent = 'Identificado como: ' + nombreDirigente() + (esAdminActual ? ' (Admin)' : '');
+    document.getElementById('user-avatar-header').src = user.photoURL || ('https://ui-avatars.com/api/?name=' + encodeURIComponent(user.displayName||'U') + '&background=1a3a6b&color=fff');
+    document.getElementById('nav-admin-tab').style.display = esAdminActual ? 'block' : 'none';
+    document.querySelectorAll('.solo-admin').forEach(el => el.style.display = esAdminActual ? '' : 'none');
+
     const ideaInput = document.getElementById('idea-nombre-input');
-    if (ideaInput && nombre && !ideaInput.value) ideaInput.value = nombre;
-  }
+    if (ideaInput) { ideaInput.value = nombreDirigente(); ideaInput.disabled = true; }
+
+    if (window.iniciarMuroIdeas) window.iniciarMuroIdeas();
+    cargarEventosSidebar();
+  });
 
   window.calcularEdad = function calcularEdad(fechaISO) {
     if (!fechaISO) return null;
@@ -171,15 +215,25 @@
       return;
     }
 
-    wrap.innerHTML = jovenes.map(j => `
-      <div class="joven-check-row">
+    wrap.innerHTML = jovenes.map(j => {
+      const estado = marcados[j.id] === true ? 'fila-presente' : (marcados[j.id] === false ? 'fila-ausente' : '');
+      return `
+      <div class="joven-check-row ${estado}" id="fila-${j.id}">
         <span class="nombre">${j.nombre} ${j.apellido}</span>
         <span class="edad-tag">${window.calcularEdad(j.fechaNacimiento) ?? "—"} años</span>
-        <input type="checkbox" id="check-${j.id}" ${marcados[j.id] ? "checked" : ""}>
-      </div>`).join("") +
+        <input type="checkbox" id="check-${j.id}" ${marcados[j.id] ? "checked" : ""} onchange="marcarColorFila('${j.id}', this.checked)">
+      </div>`;
+    }).join("") +
       `<button class="btn-guardar-lista" onclick="guardarListaAsistencia('${rama}','${fecha}')">💾 Guardar asistencia</button>`;
 
     wrap.dataset.jovenesIds = JSON.stringify(jovenes.map(j => ({ id: j.id, nombre: `${j.nombre} ${j.apellido}` })));
+  };
+
+  window.marcarColorFila = (jovenId, presente) => {
+    const fila = document.getElementById('fila-' + jovenId);
+    if (!fila) return;
+    fila.classList.remove('fila-presente', 'fila-ausente');
+    fila.classList.add(presente ? 'fila-presente' : 'fila-ausente');
   };
 
   window.guardarListaAsistencia = async (rama, fecha) => {
@@ -296,13 +350,12 @@
   };
 
   window.publicarIdea = async () => {
-    const nombre = document.getElementById('idea-nombre-input').value.trim();
+    const nombre = nombreDirigente();
     const texto = document.getElementById('idea-texto-input').value.trim();
-    if (!nombre) { alert('Aclará tu nombre para publicar la idea.'); return; }
+    if (!nombre) { alert('Tenés que iniciar sesión para publicar.'); return; }
     if (!texto) { alert('Escribí tu idea antes de publicar.'); return; }
-    await addDoc(collection(db, "muro_ideas"), { nombre, texto, fecha: serverTimestamp() });
+    await addDoc(collection(db, "muro_ideas"), { nombre, autorEmail: currentUser.email, texto, fecha: serverTimestamp() });
     document.getElementById('idea-texto-input').value = '';
-    localStorage.setItem('dirigente_nombre', nombre);
   };
 
   window.eliminarIdea = async (id) => {
@@ -310,7 +363,102 @@
     await deleteDoc(doc(db, "muro_ideas", id));
   };
 
-  window._presentesInit = () => { actualizarEstadoDirigente(); };
+  // --- Traer jóvenes de una rama puntual, sin depender del caché en tiempo real ---
+  window.obtenerJovenesPorRamaOnce = async (rama) => {
+    const q = query(collection(db, "jovenes"), where("rama", "==", rama), where("activo", "==", true), orderBy("apellido"));
+    const snap = await getDocs(q);
+    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  };
+
+  // ============ ADMINISTRACIÓN DE ROLES ============
+  window.cargarDirigentes = () => {
+    const q = query(collection(db, "dirigentes"), orderBy("nombre"));
+    onSnapshot(q, async snap => {
+      const dirigentes = snap.docs.map(d => d.data());
+      const adminsSnap = await getDocs(collection(db, "administradores"));
+      const adminsSet = new Set(adminsSnap.docs.map(d => d.id));
+      window.renderDirigentesAdmin(dirigentes, adminsSet);
+    });
+  };
+
+  window.otorgarAdmin = async (email, nombre) => {
+    if (!window._esAdmin) return;
+    if (!confirm(`¿Dar permisos de administrador a ${nombre} (${email})?`)) return;
+    await setDoc(doc(db, "administradores", email), {
+      email, nombre, otorgadoPor: currentUser.email, otorgadoEn: serverTimestamp()
+    });
+  };
+
+  window.revocarAdmin = async (email) => {
+    if (!window._esAdmin) return;
+    if (ADMIN_BOOTSTRAP.includes(email)) { alert('Este administrador no se puede quitar.'); return; }
+    if (!confirm(`¿Quitar permisos de administrador a ${email}?`)) return;
+    await deleteDoc(doc(db, "administradores", email));
+  };
+
+  // --- Responsables de rama (para las notificaciones de ausencia) ---
+  window.cargarResponsablesRama = async () => {
+    const snap = await getDoc(doc(db, "config", "responsablesRama"));
+    return snap.exists() ? snap.data() : {};
+  };
+
+  window.guardarResponsableRama = async (rama, email, nombre) => {
+    await setDoc(doc(db, "config", "responsablesRama"), { [rama]: { email, nombre } }, { merge: true });
+  };
+
+  // ============ DASHBOARD DE AUSENCIAS ============
+  window.obtenerHistorialAsistencia = async (rama) => {
+    // Trae todas las asistencias de la rama y arma un mapa jovenId -> [{fecha, presente}]
+    const q = query(collection(db, "asistencias"), where("rama", "==", rama), orderBy("fecha", "asc"));
+    const snap = await getDocs(q);
+    const porJoven = {};
+    const fechasSet = new Set();
+    snap.forEach(d => {
+      const a = d.data();
+      fechasSet.add(a.fecha);
+      if (!porJoven[a.jovenId]) porJoven[a.jovenId] = {};
+      porJoven[a.jovenId][a.fecha] = a.presente;
+    });
+    const fechas = Array.from(fechasSet).sort();
+    return { fechas, porJoven };
+  };
+
+  function calcularRachaAusencias(fechas, registrosJoven) {
+    // Cuenta ausencias consecutivas contando desde la reunión más reciente hacia atrás
+    let racha = 0;
+    for (let i = fechas.length - 1; i >= 0; i--) {
+      const presente = registrosJoven[fechas[i]];
+      if (presente === true) break;
+      racha++;
+    }
+    return racha;
+  }
+  window.calcularRachaAusencias = calcularRachaAusencias;
+
+  window.enviarMailAusencia = async (joven, racha, ultimaFecha, responsable) => {
+    if (!responsable || !responsable.email) return false;
+    try {
+      await emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID, {
+        dirigente_nombre: responsable.nombre || 'Dirigente',
+        to_email: responsable.email,
+        joven_nombre: joven.nombre,
+        joven_apellido: joven.apellido,
+        rama: joven.rama,
+        cantidad_faltas: String(racha),
+        ultima_fecha: ultimaFecha,
+        contacto: joven.contacto || 'Sin datos de contacto cargados'
+      });
+      await updateDoc(doc(db, "jovenes", joven.id), {
+        ultimaNotificacionAusencia: { fecha: ultimaFecha, racha }
+      });
+      return true;
+    } catch (e) {
+      console.error('Error enviando mail de ausencia:', e);
+      return false;
+    }
+  };
+
+  window._presentesInit = () => {};
 </script>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -724,6 +872,8 @@
   .joven-check-row .nombre { flex: 1; font-size: 13px; font-weight: 600; }
   .joven-check-row .edad-tag { font-size: 11px; color: var(--text-sec); }
   .joven-check-row input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--rojo); }
+  .joven-check-row.fila-presente { background: #d4f0d4; border-color: #2e7d32; }
+  .joven-check-row.fila-ausente { background: var(--rojo-cl); border-color: var(--rojo); }
   .btn-guardar-lista {
     background: var(--rojo); color: white; border: none; border-radius: 8px;
     padding: 12px; width: 100%; font-size: 14px; font-weight: 700; cursor: pointer;
@@ -781,6 +931,43 @@
   .import-preview-acciones { display: flex; gap: 8px; }
   .import-preview-acciones button.cancelar { background: #aaa; }
 
+  /* ---- DOCUMENTACIÓN DEL JOVEN ---- */
+  .doc-tag { display: inline-block; margin-top: 4px; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; width: fit-content; }
+  .doc-ok { background: #d4f0d4; color: #2e7d32; }
+  .doc-falta { background: var(--rojo-cl); color: var(--rojo); }
+
+  /* ---- DASHBOARD DE AUSENCIAS ---- */
+  .ausencias-leyenda { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11px; color: var(--text-sec); margin-bottom: 14px; align-items: center; }
+  .ausencias-leyenda .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+  .dot-verde { background: #2e7d32; }
+  .dot-roja  { background: var(--rojo); }
+  .dot-gris  { background: #ccc; }
+  .dot-alerta { background: var(--amarillo); border: 2px solid var(--rojo); }
+  .ausencias-tabla-scroll { overflow-x: auto; }
+  .ausencias-tabla { border-collapse: collapse; font-size: 12px; width: 100%; }
+  .ausencias-tabla th, .ausencias-tabla td { padding: 6px 8px; text-align: center; border: 1px solid var(--crema); white-space: nowrap; }
+  .ausencias-tabla th { background: var(--azul-cl); color: var(--azul); font-weight: 700; }
+  .ausencias-tabla td.nombre-joven { text-align: left; font-weight: 600; background: var(--fondo-cl); position: sticky; left: 0; }
+  .ausencias-celda-presente { background: #d4f0d4; color: #2e7d32; font-weight: 700; }
+  .ausencias-celda-ausente { background: var(--rojo-cl); color: var(--rojo); font-weight: 700; }
+  .ausencias-celda-vacia { background: #f2f2f2; color: #bbb; }
+  .fila-alerta td.nombre-joven { background: var(--amarillo-cl); border-left: 3px solid var(--rojo); }
+  .racha-badge { display: inline-block; margin-left: 6px; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 8px; background: var(--rojo); color: white; }
+
+  /* ---- PANEL ADMIN ---- */
+  .dirigente-admin-card {
+    display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+    background: var(--fondo-cl); border: 1px solid var(--crema); border-radius: 8px; margin-bottom: 8px;
+  }
+  .dirigente-admin-card img { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; }
+  .dirigente-admin-info { flex: 1; min-width: 0; }
+  .dirigente-admin-info strong { display: block; font-size: 13px; }
+  .dirigente-admin-info span { font-size: 11px; color: var(--text-sec); }
+  .badge-admin { font-size: 10px; font-weight: 700; color: var(--rojo); background: var(--rojo-cl); padding: 2px 8px; border-radius: 8px; }
+  .responsable-rama-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+  .responsable-rama-row label { width: 110px; font-size: 13px; font-weight: 700; }
+  .responsable-rama-row select { flex: 1; min-width: 180px; padding: 8px 12px; border-radius: 8px; border: 1.5px solid var(--azul-cl); font-size: 13px; font-family: 'Source Sans 3', sans-serif; }
+
   /* ---- FOOTER ---- */
   footer {
     text-align: center; padding: 20px; font-size: 12px;
@@ -798,6 +985,20 @@
 </head>
 <body>
 
+<!-- LOGIN -->
+<div id="pantalla-login-intranet" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:linear-gradient(145deg,#0d2247 0%,#1a3a6b 60%,#2a5298 100%);padding:24px;text-align:center;">
+  <div style="width:110px;height:110px;border-radius:50%;background:white;border:4px solid #e6b800;display:flex;align-items:center;justify-content:center;overflow:hidden;margin:0 auto 20px;box-shadow:0 4px 24px rgba(0,0,0,0.35);">
+    <img src="pringles-removebg-preview.png" alt="Logo" style="width:100%;height:100%;object-fit:cover;">
+  </div>
+  <h1 style="font-family:'Playfair Display',serif;color:white;font-size:26px;margin-bottom:6px;">IntraPringles</h1>
+  <p style="color:rgba(255,255,255,0.7);font-size:14px;margin-bottom:32px;">Portal de Dirigentes · Grupo Cnel. Juan Pascual Pringles</p>
+  <button onclick="loginConGoogle()" style="display:inline-flex;align-items:center;gap:12px;background:white;color:#333;padding:14px 28px;border-radius:50px;font-size:15px;font-weight:700;border:none;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,0.2);font-family:'Source Sans 3',sans-serif;">
+    <img src="https://www.google.com/favicon.ico" alt="Google" style="width:22px"> Ingresar con Google
+  </button>
+</div>
+
+<div id="app-intranet-wrap" style="display:none">
+
 <!-- HEADER -->
 <header>
   <div class="header-inner">
@@ -808,7 +1009,8 @@
       <h1>Grupo Scout Cnel. Juan Pascual Pringles</h1>
       <p class="subtitle">Barracas · Buenos Aires · Portal de Dirigentes</p>
     </div>
-    <div class="header-badge">Uso Interno</div>
+    <img id="user-avatar-header" src="" alt="" style="width:36px;height:36px;border-radius:50%;object-fit:cover;border:2px solid #e6b800;margin-left:12px">
+    <button onclick="logoutIntranet()" style="background:none;border:1px solid rgba(255,255,255,0.3);color:white;border-radius:6px;padding:6px 12px;font-size:11px;cursor:pointer;font-family:'Source Sans 3',sans-serif;margin-left:8px">Salir</button>
   </div>
 </header>
 
@@ -817,8 +1019,6 @@
 </div>
 
 <div class="id-bar-global">
-  <input id="dirigente-nombre-input" placeholder="Tu nombre (para identificarte en Tareas, Muro de Ideas y Presentes)">
-  <button onclick="guardarNombreDirigente()">Guardar</button>
   <span id="dirigente-nombre-badge"></span>
 </div>
 
@@ -841,6 +1041,7 @@
     <button class="tab-btn" onclick="showTab('presentes')">📋 Presentes</button>
     <button class="tab-btn" onclick="showTab('documentos')">📁 Documentos</button>
     <a class="tab-btn" href="https://lapringles-dirigentes.github.io/ControlDeStock/" style="text-decoration:none; display:inline-block;">📦 Stock</a>
+    <button class="tab-btn" id="nav-admin-tab" style="display:none;color:#b01a1a" onclick="showTab('admin')">🛡️ Admin</button>
   </div>
 </nav>
 
@@ -996,6 +1197,7 @@
           <button class="presentes-subtab active" onclick="showPresentesSub('lista',this)">📋 Tomar lista</button>
           <button class="presentes-subtab" onclick="showPresentesSub('jovenes',this)">👥 Jóvenes</button>
           <button class="presentes-subtab" onclick="showPresentesSub('metricas',this)">📊 Métricas</button>
+          <button class="presentes-subtab" onclick="showPresentesSub('ausencias',this)">🚦 Ausencias</button>
         </div>
 
         <div class="presentes-sub active" id="presentes-sub-lista">
@@ -1051,6 +1253,27 @@
           <div id="metricas-resumen"></div>
         </div>
 
+        <div class="presentes-sub" id="presentes-sub-ausencias">
+          <div class="presentes-filtros">
+            <select id="ausencias-rama-select" onchange="cargarDashboardAusencias()">
+              <option value="">-- Elegí una rama --</option>
+              <option value="Castores">🦫 Castores</option>
+              <option value="Manada">🐺 Manada</option>
+              <option value="Scouts">⚜️ Scouts</option>
+              <option value="Caminantes">🥾 Caminantes</option>
+              <option value="Rovers">⚓ Rovers</option>
+            </select>
+            <button class="btn-presentes-accion solo-admin" style="display:none" onclick="revisarYNotificarAusencias()">📧 Revisar y notificar ausencias</button>
+          </div>
+          <div class="ausencias-leyenda">
+            <span><i class="dot dot-verde"></i> Presente</span>
+            <span><i class="dot dot-roja"></i> Ausente</span>
+            <span><i class="dot dot-gris"></i> Sin reunión / sin datos</span>
+            <span><i class="dot dot-alerta"></i> 3+ faltas seguidas</span>
+          </div>
+          <div id="ausencias-tabla-wrap"><p class="presentes-empty">Elegí una rama para ver el reporte.</p></div>
+        </div>
+
       </div>
     </div>
   </div>
@@ -1076,11 +1299,37 @@
     </div>
   </div>
 
+  <!-- =================== ADMIN =================== -->
+  <div class="tab-panel" id="tab-admin">
+    <div class="card">
+      <div class="card-header">
+        <div class="icon icon-rojo">🛡️</div>
+        <h2>Administradores</h2>
+      </div>
+      <div class="presentes-wrap">
+        <p style="font-size:12px;color:var(--text-sec);margin-bottom:14px">Los administradores pueden borrar tareas e ideas de cualquiera, marcar documentación de los jóvenes, y otorgar este mismo permiso a otros dirigentes.</p>
+        <div id="admin-dirigentes-lista"><p class="presentes-empty">Cargando dirigentes...</p></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <div class="icon icon-amari">📧</div>
+        <h2>Responsables de rama (para avisos de ausencia)</h2>
+      </div>
+      <div class="presentes-wrap">
+        <p style="font-size:12px;color:var(--text-sec);margin-bottom:14px">Elegí quién recibe el mail cuando un joven de cada rama lleva 3 o más sábados seguidos sin asistir.</p>
+        <div id="admin-responsables-wrap"><p class="presentes-empty">Cargando...</p></div>
+      </div>
+    </div>
+  </div>
+
 </main>
 
 <footer>
   Grupo Scout Cnel. Juan Pascual Pringles · Barracas, Buenos Aires · Portal de uso interno exclusivo para dirigentes
 </footer>
+
+</div><!-- /app-intranet-wrap -->
 
 <script>
   function showTab(name) {
@@ -1088,11 +1337,12 @@
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
     document.getElementById('tab-' + name).classList.add('active');
     const btns = document.querySelectorAll('.tab-btn');
-    const map = { inicio: 0, calendario: 1, tareas: 2, presentes: 3, documentos: 4 };
-    btns[map[name]].classList.add('active');
+    const map = { inicio: 0, calendario: 1, tareas: 2, presentes: 3, documentos: 4, admin: 6 };
+    if (btns[map[name]]) btns[map[name]].classList.add('active');
     if (name === 'presentes' && window._presentesInit) window._presentesInit();
     if (name === 'tareas' && window.iniciarTareas) window.iniciarTareas();
     if (name === 'calendario') renderizarMiniCalendario();
+    if (name === 'admin') iniciarPanelAdmin();
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
@@ -1109,6 +1359,9 @@
       document.getElementById('metricas-hasta-input').value = hoy;
       window.cargarMetricas();
     }
+    if (id === 'ausencias') {
+      document.querySelectorAll('.solo-admin').forEach(el => el.style.display = window._esAdmin ? '' : 'none');
+    }
   }
 
   window.renderJovenesLista = () => {
@@ -1120,6 +1373,9 @@
         <div class="info">
           <strong>${j.nombre} ${j.apellido}</strong>
           <span>${j.rama} · ${window.calcularEdad(j.fechaNacimiento) ?? "—"} años · nació ${j.fechaNacimiento || "—"}</span>
+          <span class="doc-tag ${j.documentosCompletos ? 'doc-ok' : 'doc-falta'}">
+            ${j.documentosCompletos ? '📄 Documentación completa' : '📄 Faltan documentos' + (j.documentosNotas ? ': ' + escapeHtml(j.documentosNotas) : '')}
+          </span>
         </div>
         <div class="joven-card-acciones">
           <button onclick='abrirFormJoven(${JSON.stringify(j).replace(/'/g,"&apos;")})'>✏️ Editar</button>
@@ -1142,6 +1398,7 @@
   window.abrirFormJoven = (joven) => {
     const wrap = document.getElementById('form-joven-wrap');
     const j = joven || {};
+    const puedeEditarDocs = window._esAdmin;
     wrap.innerHTML = `
       <div class="form-joven-card">
         <div class="form-row">
@@ -1158,6 +1415,14 @@
         <div class="form-row">
           <input id="fj-contacto" placeholder="Contacto (tel/email tutor)" value="${j.contacto||''}">
         </div>
+        ${puedeEditarDocs ? `
+        <div class="form-row" style="flex-direction:column;align-items:flex-start;gap:6px;background:var(--fondo-cl);padding:10px;border-radius:8px">
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600">
+            <input type="checkbox" id="fj-doc-completa" ${j.documentosCompletos ? 'checked' : ''} style="width:16px;height:16px">
+            Documentación completa
+          </label>
+          <textarea id="fj-doc-notas" placeholder="Si faltan documentos, aclará cuáles..." style="width:100%;min-height:50px;padding:8px;border-radius:6px;border:1.5px solid var(--azul-cl);font-family:'Source Sans 3',sans-serif;font-size:13px">${j.documentosNotas || ''}</textarea>
+        </div>` : ''}
         <div class="form-row">
           <button class="btn-presentes-accion" onclick="guardarFormJoven('${j.id||''}','${j.rama||''}')">💾 Guardar</button>
           <button class="btn-presentes-accion" style="background:#aaa" onclick="document.getElementById('form-joven-wrap').innerHTML=''">Cancelar</button>
@@ -1174,6 +1439,12 @@
       contacto: document.getElementById('fj-contacto').value.trim()
     };
     if (!datos.nombre || !datos.apellido || !datos.rama) { alert('Completá nombre, apellido y rama.'); return; }
+
+    const docCheckbox = document.getElementById('fj-doc-completa');
+    if (docCheckbox) {
+      datos.documentosCompletos = docCheckbox.checked;
+      datos.documentosNotas = document.getElementById('fj-doc-notas').value.trim();
+    }
 
     if (id && ramaAnterior && ramaAnterior !== datos.rama) {
       await window.cambiarRamaJoven(id, ramaAnterior, datos.rama);
@@ -1375,6 +1646,131 @@
     return String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
 
+  // ===================== PANEL ADMIN =====================
+  const RAMAS_LISTA = ["Castores","Manada","Scouts","Caminantes","Rovers"];
+
+  function iniciarPanelAdmin() {
+    if (!window._esAdmin) { showTab('inicio'); return; }
+    if (window.cargarDirigentes) window.cargarDirigentes();
+    cargarResponsablesUI();
+  }
+
+  window.renderDirigentesAdmin = (dirigentes, adminsSet) => {
+    const cont = document.getElementById('admin-dirigentes-lista');
+    if (!cont) return;
+    if (dirigentes.length === 0) { cont.innerHTML = `<p class="presentes-empty">Todavía no entró ningún dirigente.</p>`; return; }
+    cont.innerHTML = dirigentes.map(d => {
+      const esAdmin = adminsSet.has(d.email) || d.email === 'alan.d.fernandez23@gmail.com';
+      const esBootstrap = d.email === 'alan.d.fernandez23@gmail.com';
+      return `
+        <div class="dirigente-admin-card">
+          <img src="${d.foto || ('https://ui-avatars.com/api/?name='+encodeURIComponent(d.nombre||'U')+'&background=1a3a6b&color=fff')}" alt="">
+          <div class="dirigente-admin-info">
+            <strong>${escapeHtml(d.nombre || d.email)} ${esAdmin ? '<span class="badge-admin">Admin</span>' : ''}</strong>
+            <span>${escapeHtml(d.email)}</span>
+          </div>
+          ${esBootstrap ? '' : (esAdmin
+            ? `<button class="btn-presentes-accion" style="background:#aaa" onclick="revocarAdmin('${d.email}')">Quitar admin</button>`
+            : `<button class="btn-presentes-accion" onclick="otorgarAdmin('${d.email}','${escapeHtml(d.nombre||d.email).replace(/'/g,"&apos;")}')">Hacer admin</button>`)}
+        </div>`;
+    }).join('');
+  };
+
+  async function cargarResponsablesUI() {
+    const wrap = document.getElementById('admin-responsables-wrap');
+    if (!wrap) return;
+    const actuales = await window.cargarResponsablesRama();
+    const adminsSnap = null; // reutilizamos dirigentesCache si existe
+    wrap.innerHTML = RAMAS_LISTA.map(r => `
+      <div class="responsable-rama-row">
+        <label>${r}</label>
+        <input id="resp-email-${r}" placeholder="Email del dirigente responsable" value="${actuales[r]?.email || ''}">
+        <input id="resp-nombre-${r}" placeholder="Nombre" value="${actuales[r]?.nombre || ''}" style="max-width:160px">
+        <button class="btn-presentes-accion" onclick="guardarResponsableUI('${r}')">Guardar</button>
+      </div>`).join('');
+  }
+
+  window.guardarResponsableUI = async (rama) => {
+    const email = document.getElementById('resp-email-' + rama).value.trim();
+    const nombre = document.getElementById('resp-nombre-' + rama).value.trim();
+    if (!email) { alert('Poné un email.'); return; }
+    await window.guardarResponsableRama(rama, email, nombre);
+    alert(`✅ Responsable de ${rama} guardado.`);
+  };
+
+  // ===================== DASHBOARD DE AUSENCIAS =====================
+  window.cargarDashboardAusencias = async () => {
+    const rama = document.getElementById('ausencias-rama-select').value;
+    const wrap = document.getElementById('ausencias-tabla-wrap');
+    if (!rama) { wrap.innerHTML = `<p class="presentes-empty">Elegí una rama para ver el reporte.</p>`; return; }
+    wrap.innerHTML = `<p class="presentes-empty">Cargando...</p>`;
+
+    const jovenesRama = await window.obtenerJovenesPorRamaOnce(rama);
+    let jovenesLista = jovenesRama;
+    if (jovenesLista.length === 0) { wrap.innerHTML = `<p class="presentes-empty">No hay jóvenes activos en ${rama}.</p>`; return; }
+
+    const { fechas, porJoven } = await window.obtenerHistorialAsistencia(rama);
+    if (fechas.length === 0) { wrap.innerHTML = `<p class="presentes-empty">No hay asistencias registradas todavía para ${rama}.</p>`; return; }
+
+    const ultimas = fechas.slice(-8); // mostramos las últimas 8 reuniones para que la tabla no sea gigante
+
+    let filasHtml = '';
+    jovenesLista.forEach(j => {
+      const registros = porJoven[j.id] || {};
+      const racha = window.calcularRachaAusencias(fechas, registros);
+      const alerta = racha >= 3;
+      filasHtml += `<tr class="${alerta ? 'fila-alerta' : ''}">
+        <td class="nombre-joven">${escapeHtml(j.nombre)} ${escapeHtml(j.apellido)} ${alerta ? `<span class="racha-badge">${racha} seguidas</span>` : ''}</td>
+        ${ultimas.map(f => {
+          const p = registros[f];
+          const cls = p === true ? 'ausencias-celda-presente' : (p === false ? 'ausencias-celda-ausente' : 'ausencias-celda-vacia');
+          const txt = p === true ? '✓' : (p === false ? '✕' : '—');
+          return `<td class="${cls}">${txt}</td>`;
+        }).join('')}
+      </tr>`;
+    });
+
+    wrap.innerHTML = `
+      <div class="ausencias-tabla-scroll">
+        <table class="ausencias-tabla">
+          <thead><tr><th>Joven</th>${ultimas.map(f => `<th>${f.slice(5)}</th>`).join('')}</tr></thead>
+          <tbody>${filasHtml}</tbody>
+        </table>
+      </div>`;
+  };
+
+  window.revisarYNotificarAusencias = async () => {
+    if (!window._esAdmin) return;
+    const rama = document.getElementById('ausencias-rama-select').value;
+    if (!rama) { alert('Elegí una rama primero.'); return; }
+    const responsables = await window.cargarResponsablesRama();
+    const responsable = responsables[rama];
+    if (!responsable || !responsable.email) {
+      alert('No hay un responsable configurado para esta rama. Andá a Admin → Responsables de rama.');
+      return;
+    }
+    const jovenesRama = await window.obtenerJovenesPorRamaOnce(rama);
+    const { fechas, porJoven } = await window.obtenerHistorialAsistencia(rama);
+    if (fechas.length === 0) { alert('No hay asistencias registradas.'); return; }
+    const ultimaFecha = fechas[fechas.length - 1];
+
+    let enviados = 0, revisados = 0;
+    for (const j of jovenesRama) {
+      const registros = porJoven[j.id] || {};
+      const racha = window.calcularRachaAusencias(fechas, registros);
+      revisados++;
+      if (racha >= 3) {
+        const yaNotificado = j.ultimaNotificacionAusencia && j.ultimaNotificacionAusencia.fecha === ultimaFecha;
+        if (!yaNotificado) {
+          const ok = await window.enviarMailAusencia(j, racha, ultimaFecha, responsable);
+          if (ok) enviados++;
+        }
+      }
+    }
+    alert(`Revisados ${revisados} jóvenes de ${rama}. Se enviaron ${enviados} mail(es) nuevo(s) a ${responsable.email}.`);
+    window.cargarDashboardAusencias();
+  };
+
   function formatFechaCorta(ts) {
     if (!ts || !ts.toDate) return '';
     return ts.toDate().toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -1400,7 +1796,7 @@
             <div class="tarea-meta">${meta}</div>
             <div class="tarea-acciones">
               ${otros.map(e => `<button onclick="cambiarEstadoTarea('${t.id}','${e}')">${e}</button>`).join('')}
-              <button class="tarea-eliminar" onclick="eliminarTarea('${t.id}')">🗑️</button>
+              ${window._esAdmin ? `<button class="tarea-eliminar" onclick="eliminarTarea('${t.id}')">🗑️</button>` : ''}
             </div>
           </div>`;
       }).join('');
@@ -1417,7 +1813,7 @@
         <div class="idea-texto">${escapeHtml(i.texto)}</div>
         <div class="idea-meta">
           <span><strong>${escapeHtml(i.nombre)}</strong> · ${formatFechaCorta(i.fecha)}</span>
-          <button class="idea-borrar" onclick="eliminarIdea('${i.id}')">Eliminar</button>
+          ${window._esAdmin ? `<button class="idea-borrar" onclick="eliminarIdea('${i.id}')">Eliminar</button>` : ''}
         </div>
       </div>`).join('');
   };
