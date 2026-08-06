@@ -48,7 +48,7 @@
   const EMAILJS_TEMPLATE_ID = "template_g5blgxo";
 
   // Admin "de arranque": siempre admin, no se puede quitar desde la UI
-  const ADMIN_BOOTSTRAP = ["alan.d.fernandez23@gmail.com"];
+  const ADMIN_BOOTSTRAP = ["alan.d.fernandez23@gmail.com", "comunicacionespringles@gmail.com"];
 
   let currentUser = null;
   let esAdminActual = false;
@@ -1660,8 +1660,9 @@
     if (!cont) return;
     if (dirigentes.length === 0) { cont.innerHTML = `<p class="presentes-empty">Todavía no entró ningún dirigente.</p>`; return; }
     cont.innerHTML = dirigentes.map(d => {
-      const esAdmin = adminsSet.has(d.email) || d.email === 'alan.d.fernandez23@gmail.com';
-      const esBootstrap = d.email === 'alan.d.fernandez23@gmail.com';
+      const BOOTSTRAP = ["alan.d.fernandez23@gmail.com", "comunicacionespringles@gmail.com"];
+      const esAdmin = adminsSet.has(d.email) || BOOTSTRAP.includes(d.email);
+      const esBootstrap = BOOTSTRAP.includes(d.email);
       return `
         <div class="dirigente-admin-card">
           <img src="${d.foto || ('https://ui-avatars.com/api/?name='+encodeURIComponent(d.nombre||'U')+'&background=1a3a6b&color=fff')}" alt="">
