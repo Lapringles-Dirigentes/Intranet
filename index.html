@@ -49,6 +49,11 @@
 
   // Admin "de arranque": siempre admin, no se puede quitar desde la UI
   const ADMIN_BOOTSTRAP = ["alan.d.fernandez23@gmail.com", "comunicacionespringles@gmail.com"];
+  const RAMAS_TODAS = ["Castores","Manada","Scouts","Caminantes","Rovers"];
+  const RAMA_COLORES = { Castores:"#f5821f", Manada:"#ffd400", Scouts:"#2e7d32", Caminantes:"#1565c0", Rovers:"#c62828" };
+  const RAMA_ICONOS  = { Castores:"rama-castores.jpg", Manada:"rama-manada.jpg", Scouts:"rama-tropa.jpg", Caminantes:"rama-caminantes.jpg", Rovers:"rama-rovers.jpg" };
+  window._RAMA_COLORES = RAMA_COLORES;
+  window._RAMA_ICONOS = RAMA_ICONOS;
 
   let currentUser = null;
   let esAdminActual = false;
@@ -71,6 +76,7 @@
     if (!user) {
       currentUser = null; esAdminActual = false;
       document.getElementById('pantalla-login-intranet').style.display = 'flex';
+      document.getElementById('pantalla-pendiente-intranet').style.display = 'none';
       document.getElementById('app-intranet-wrap').style.display = 'none';
       return;
     }
@@ -92,12 +98,38 @@
     window._esAdmin = esAdminActual;
     window._currentUser = user;
 
+    // ---- Chequeo de acceso autorizado + ramas asignadas ----
+    if (esAdminActual) {
+      // Los admins de arranque entran directo con acceso a todas las ramas
+      window._misRamas = RAMAS_TODAS;
+    } else {
+      const autRef = doc(db, "autorizados", user.email);
+      const autSnap = await getDoc(autRef);
+      if (!autSnap.exists()) {
+        // Primera vez: creamos la solicitud pendiente
+        await setDoc(autRef, {
+          email: user.email, nombre: user.displayName || '', foto: user.photoURL || '',
+          autorizado: false, ramas: [], solicitadoEn: serverTimestamp()
+        });
+      }
+      const datosAut = autSnap.exists() ? autSnap.data() : { autorizado: false, ramas: [] };
+      if (!datosAut.autorizado) {
+        document.getElementById('pantalla-login-intranet').style.display = 'none';
+        document.getElementById('pantalla-pendiente-intranet').style.display = 'flex';
+        document.getElementById('app-intranet-wrap').style.display = 'none';
+        return;
+      }
+      window._misRamas = datosAut.ramas || [];
+    }
+
     document.getElementById('pantalla-login-intranet').style.display = 'none';
+    document.getElementById('pantalla-pendiente-intranet').style.display = 'none';
     document.getElementById('app-intranet-wrap').style.display = 'block';
     document.getElementById('dirigente-nombre-badge').textContent = 'Identificado como: ' + nombreDirigente() + (esAdminActual ? ' (Admin)' : '');
     document.getElementById('user-avatar-header').src = user.photoURL || ('https://ui-avatars.com/api/?name=' + encodeURIComponent(user.displayName||'U') + '&background=1a3a6b&color=fff');
     document.getElementById('nav-admin-tab').style.display = esAdminActual ? 'block' : 'none';
     document.querySelectorAll('.solo-admin').forEach(el => el.style.display = esAdminActual ? '' : 'none');
+    if (window.aplicarRestriccionRamas) window.aplicarRestriccionRamas();
 
     const ideaInput = document.getElementById('idea-nombre-input');
     if (ideaInput) { ideaInput.value = nombreDirigente(); ideaInput.disabled = true; }
@@ -215,7 +247,11 @@
       return;
     }
 
-    wrap.innerHTML = jovenes.map(j => {
+    const bannerRama = `<div class="rama-banner" style="background:${window._RAMA_COLORES[rama]}">
+      <img src="${window._RAMA_ICONOS[rama]}" alt="${rama}"> ${rama}
+    </div>`;
+
+    wrap.innerHTML = bannerRama + jovenes.map(j => {
       const estado = marcados[j.id] === true ? 'fila-presente' : (marcados[j.id] === false ? 'fila-ausente' : '');
       return `
       <div class="joven-check-row ${estado}" id="fila-${j.id}">
@@ -368,6 +404,31 @@
     const q = query(collection(db, "jovenes"), where("rama", "==", rama), where("activo", "==", true), orderBy("apellido"));
     const snap = await getDocs(q);
     return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  };
+
+  // ============ SOLICITUDES DE ACCESO (aprobación + ramas) ============
+  window.cargarSolicitudesAcceso = () => {
+    const q = query(collection(db, "autorizados"), orderBy("solicitadoEn", "desc"));
+    onSnapshot(q, snap => {
+      const solicitudes = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      window.renderSolicitudesAcceso(solicitudes);
+    });
+  };
+
+  window.guardarAccesoSolicitud = async (email, ramasSeleccionadas) => {
+    if (!window._esAdmin) return;
+    await setDoc(doc(db, "autorizados", email), {
+      autorizado: true,
+      ramas: ramasSeleccionadas,
+      autorizadoPor: currentUser.email,
+      autorizadoEn: serverTimestamp()
+    }, { merge: true });
+  };
+
+  window.revocarAccesoSolicitud = async (email) => {
+    if (!window._esAdmin) return;
+    if (!confirm(`¿Quitar el acceso de ${email} a la Intranet?`)) return;
+    await setDoc(doc(db, "autorizados", email), { autorizado: false }, { merge: true });
   };
 
   // ============ ADMINISTRACIÓN DE ROLES ============
@@ -959,13 +1020,26 @@
     display: flex; align-items: center; gap: 10px; padding: 10px 12px;
     background: var(--fondo-cl); border: 1px solid var(--crema); border-radius: 8px; margin-bottom: 8px;
   }
+  .ramas-checkbox-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .rama-checkbox-pill {
+    display: flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700;
+    padding: 5px 10px 5px 6px; border-radius: 16px; cursor: pointer;
+    border: 2px solid var(--rama-color); color: var(--rama-color); background: white;
+  }
+  .rama-checkbox-pill img { width: 20px; height: 20px; border-radius: 50%; object-fit: cover; }
+  .rama-checkbox-pill input { width: 14px; height: 14px; accent-color: var(--rama-color); }
+  .rama-banner {
+    display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-radius: 8px;
+    margin-bottom: 14px; font-weight: 700; font-size: 13px; color: white;
+  }
+  .rama-banner img { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; border: 2px solid white; }
   .dirigente-admin-card img { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; }
   .dirigente-admin-info { flex: 1; min-width: 0; }
   .dirigente-admin-info strong { display: block; font-size: 13px; }
   .dirigente-admin-info span { font-size: 11px; color: var(--text-sec); }
   .badge-admin { font-size: 10px; font-weight: 700; color: var(--rojo); background: var(--rojo-cl); padding: 2px 8px; border-radius: 8px; }
   .responsable-rama-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
-  .responsable-rama-row label { width: 110px; font-size: 13px; font-weight: 700; }
+  .responsable-rama-row label { width: 130px; font-size: 13px; font-weight: 700; display: flex; align-items: center; }
   .responsable-rama-row select { flex: 1; min-width: 180px; padding: 8px 12px; border-radius: 8px; border: 1.5px solid var(--azul-cl); font-size: 13px; font-family: 'Source Sans 3', sans-serif; }
 
   /* ---- FOOTER ---- */
@@ -995,6 +1069,14 @@
   <button onclick="loginConGoogle()" style="display:inline-flex;align-items:center;gap:12px;background:white;color:#333;padding:14px 28px;border-radius:50px;font-size:15px;font-weight:700;border:none;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,0.2);font-family:'Source Sans 3',sans-serif;">
     <img src="https://www.google.com/favicon.ico" alt="Google" style="width:22px"> Ingresar con Google
   </button>
+</div>
+
+<!-- PANTALLA: acceso pendiente de aprobación -->
+<div id="pantalla-pendiente-intranet" style="display:none;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:var(--fondo, #f4f6fb);padding:24px;text-align:center;">
+  <div style="font-size:52px;margin-bottom:14px">⏳</div>
+  <h1 style="font-family:'Playfair Display',serif;color:#1a3a6b;font-size:22px;margin-bottom:10px;">Tu acceso está pendiente de aprobación</h1>
+  <p style="color:#3a4a6b;font-size:14px;max-width:380px;margin-bottom:24px;line-height:1.6;">Un administrador de la Intranet tiene que autorizarte y asignarte tu(s) rama(s) antes de que puedas entrar. Avisale a un dirigente con permisos de admin.</p>
+  <button onclick="logoutIntranet()" style="background:none;border:1px solid #1a3a6b;color:#1a3a6b;padding:10px 20px;border-radius:8px;font-size:13px;cursor:pointer;font-family:'Source Sans 3',sans-serif;">Salir</button>
 </div>
 
 <div id="app-intranet-wrap" style="display:none">
@@ -1303,6 +1385,16 @@
   <div class="tab-panel" id="tab-admin">
     <div class="card">
       <div class="card-header">
+        <div class="icon icon-rojo">🔑</div>
+        <h2>Solicitudes de acceso</h2>
+      </div>
+      <div class="presentes-wrap">
+        <p style="font-size:12px;color:var(--text-sec);margin-bottom:14px">Cada dirigente que entra por primera vez queda acá pendiente. Tildá las ramas a las que va a tener acceso y aprobalo.</p>
+        <div id="admin-solicitudes-lista"><p class="presentes-empty">Cargando solicitudes...</p></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header">
         <div class="icon icon-rojo">🛡️</div>
         <h2>Administradores</h2>
       </div>
@@ -1369,10 +1461,10 @@
     if (!wrap) return;
     if (window.jovenesCache.length === 0) { wrap.innerHTML = `<p class="presentes-empty">No hay jóvenes cargados todavía.</p>`; return; }
     wrap.innerHTML = window.jovenesCache.map(j => `
-      <div class="joven-card">
+      <div class="joven-card" style="border-left:4px solid ${window._RAMA_COLORES[j.rama] || 'var(--crema)'}">
         <div class="info">
           <strong>${j.nombre} ${j.apellido}</strong>
-          <span>${j.rama} · ${window.calcularEdad(j.fechaNacimiento) ?? "—"} años · nació ${j.fechaNacimiento || "—"}</span>
+          <span>${window.ramaIconHtml(j.rama, 16)}${j.rama} · ${window.calcularEdad(j.fechaNacimiento) ?? "—"} años · nació ${j.fechaNacimiento || "—"}</span>
           <span class="doc-tag ${j.documentosCompletos ? 'doc-ok' : 'doc-falta'}">
             ${j.documentosCompletos ? '📄 Documentación completa' : '📄 Faltan documentos' + (j.documentosNotas ? ': ' + escapeHtml(j.documentosNotas) : '')}
           </span>
@@ -1609,32 +1701,46 @@
     if (!desde || !hasta) return;
 
     const datos = await window.obtenerAsistenciasRango(rama, desde, hasta);
-
-    const porFecha = {};
-    datos.forEach(d => {
-      if (!d.presente) return;
-      porFecha[d.fecha] = (porFecha[d.fecha] || 0) + 1;
-    });
-    const fechas = Object.keys(porFecha).sort();
-    const valores = fechas.map(f => porFecha[f]);
-
     const ctx = document.getElementById('grafico-presentismo').getContext('2d');
     if (chartPresentismo) chartPresentismo.destroy();
-    chartPresentismo = new Chart(ctx, {
-      type: 'bar',
-      data: {
-        labels: fechas.length ? fechas : ['Sin datos'],
-        datasets: [{
-          label: rama ? `Presentes — ${rama}` : 'Presentes — todas las ramas',
-          data: valores.length ? valores : [0],
-          backgroundColor: '#1a3a6b'
-        }]
-      },
-      options: { responsive: true, scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } } }
-    });
 
-    const totalReuniones = fechas.length;
-    const totalPresentes = valores.reduce((a,b) => a+b, 0);
+    let totalReuniones, totalPresentes;
+
+    if (rama) {
+      // Una rama puntual: barras por fecha, coloreadas con el color de esa rama
+      const porFecha = {};
+      datos.forEach(d => { if (d.presente) porFecha[d.fecha] = (porFecha[d.fecha] || 0) + 1; });
+      const fechas = Object.keys(porFecha).sort();
+      const valores = fechas.map(f => porFecha[f]);
+      chartPresentismo = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: fechas.length ? fechas : ['Sin datos'],
+          datasets: [{ label: `Presentes — ${rama}`, data: valores.length ? valores : [0], backgroundColor: window._RAMA_COLORES[rama] || '#1a3a6b' }]
+        },
+        options: { responsive: true, scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } } }
+      });
+      totalReuniones = fechas.length;
+      totalPresentes = valores.reduce((a,b) => a+b, 0);
+    } else {
+      // Todas las ramas: un total por rama, cada barra con su color
+      const RAMAS_ORDEN = ["Castores","Manada","Scouts","Caminantes","Rovers"];
+      const porRama = {};
+      RAMAS_ORDEN.forEach(r => porRama[r] = 0);
+      const fechasSet = new Set();
+      datos.forEach(d => { fechasSet.add(d.fecha); if (d.presente) porRama[d.rama] = (porRama[d.rama] || 0) + 1; });
+      chartPresentismo = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: RAMAS_ORDEN,
+          datasets: [{ label: 'Presentes por rama', data: RAMAS_ORDEN.map(r => porRama[r]), backgroundColor: RAMAS_ORDEN.map(r => window._RAMA_COLORES[r]) }]
+        },
+        options: { responsive: true, scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } } }
+      });
+      totalReuniones = fechasSet.size;
+      totalPresentes = Object.values(porRama).reduce((a,b) => a+b, 0);
+    }
+
     const promedio = totalReuniones ? (totalPresentes / totalReuniones).toFixed(1) : 0;
     document.getElementById('metricas-resumen').innerHTML = `
       <div class="info-resumen">
@@ -1646,12 +1752,69 @@
     return String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
 
+  // ===================== SOLICITUDES DE ACCESO: render =====================
+  window.renderSolicitudesAcceso = (solicitudes) => {
+    const cont = document.getElementById('admin-solicitudes-lista');
+    if (!cont) return;
+    if (solicitudes.length === 0) { cont.innerHTML = `<p class="presentes-empty">Nadie pidió acceso todavía.</p>`; return; }
+    cont.innerHTML = solicitudes.map(s => {
+      const ramasActuales = s.ramas || [];
+      return `
+        <div class="dirigente-admin-card" style="flex-direction:column;align-items:stretch;gap:10px">
+          <div style="display:flex;align-items:center;gap:10px">
+            <img src="${s.foto || ('https://ui-avatars.com/api/?name='+encodeURIComponent(s.nombre||'U')+'&background=1a3a6b&color=fff')}" alt="">
+            <div class="dirigente-admin-info">
+              <strong>${escapeHtml(s.nombre || s.email)} ${s.autorizado ? '<span class="badge-admin" style="background:#d4f0d4;color:#2e7d32">Aprobado</span>' : '<span class="badge-admin">Pendiente</span>'}</strong>
+              <span>${escapeHtml(s.email)}</span>
+            </div>
+          </div>
+          <div class="ramas-checkbox-row">
+            ${RAMAS_LISTA.map(r => `
+              <label class="rama-checkbox-pill" style="--rama-color:${window._RAMA_COLORES[r]}">
+                <input type="checkbox" value="${r}" id="chk-${s.id}-${r}" ${ramasActuales.includes(r) ? 'checked' : ''}>
+                <img src="${window._RAMA_ICONOS[r]}" alt="${r}"> ${r}
+              </label>`).join('')}
+          </div>
+          <div style="display:flex;gap:8px">
+            <button class="btn-presentes-accion" onclick="aprobarSolicitud('${s.id}')">${s.autorizado ? '💾 Guardar ramas' : '✅ Aprobar acceso'}</button>
+            ${s.autorizado ? `<button class="btn-presentes-accion" style="background:#aaa" onclick="revocarAccesoSolicitud('${s.id}')">Quitar acceso</button>` : ''}
+          </div>
+        </div>`;
+    }).join('');
+  };
+
+  window.aprobarSolicitud = async (email) => {
+    const seleccionadas = RAMAS_LISTA.filter(r => document.getElementById(`chk-${email}-${r}`)?.checked);
+    if (seleccionadas.length === 0) { alert('Tildá al menos una rama.'); return; }
+    await window.guardarAccesoSolicitud(email, seleccionadas);
+    alert('✅ Acceso guardado.');
+  };
+
+  // ===================== ÍCONOS/COLORES DE RAMA =====================
+  window.ramaIconHtml = function ramaIconHtml(rama, size) {
+    if (!rama || !window._RAMA_ICONOS[rama]) return '';
+    size = size || 18;
+    return `<img src="${window._RAMA_ICONOS[rama]}" alt="${rama}" style="width:${size}px;height:${size}px;border-radius:50%;object-fit:cover;vertical-align:middle;margin-right:5px;border:1.5px solid ${window._RAMA_COLORES[rama]}">`;
+  }
+
+  // Restringe los <select> de rama a las ramas asignadas al dirigente (los admins ven todas)
+  window.aplicarRestriccionRamas = () => {
+    if (window._esAdmin) return; // admins ven todo
+    const misRamas = window._misRamas || [];
+    document.querySelectorAll('#lista-rama-select, #jovenes-rama-select, #metricas-rama-select, #ausencias-rama-select').forEach(sel => {
+      Array.from(sel.options).forEach(opt => {
+        if (opt.value && !misRamas.includes(opt.value)) opt.remove();
+      });
+    });
+  };
+
   // ===================== PANEL ADMIN =====================
   const RAMAS_LISTA = ["Castores","Manada","Scouts","Caminantes","Rovers"];
 
   function iniciarPanelAdmin() {
     if (!window._esAdmin) { showTab('inicio'); return; }
     if (window.cargarDirigentes) window.cargarDirigentes();
+    if (window.cargarSolicitudesAcceso) window.cargarSolicitudesAcceso();
     cargarResponsablesUI();
   }
 
@@ -1684,7 +1847,7 @@
     const adminsSnap = null; // reutilizamos dirigentesCache si existe
     wrap.innerHTML = RAMAS_LISTA.map(r => `
       <div class="responsable-rama-row">
-        <label>${r}</label>
+        <label>${window.ramaIconHtml(r, 22)}${r}</label>
         <input id="resp-email-${r}" placeholder="Email del dirigente responsable" value="${actuales[r]?.email || ''}">
         <input id="resp-nombre-${r}" placeholder="Nombre" value="${actuales[r]?.nombre || ''}" style="max-width:160px">
         <button class="btn-presentes-accion" onclick="guardarResponsableUI('${r}')">Guardar</button>
@@ -1732,6 +1895,7 @@
     });
 
     wrap.innerHTML = `
+      <div class="rama-banner" style="background:${window._RAMA_COLORES[rama]}"><img src="${window._RAMA_ICONOS[rama]}" alt="${rama}"> ${rama}</div>
       <div class="ausencias-tabla-scroll">
         <table class="ausencias-tabla">
           <thead><tr><th>Joven</th>${ultimas.map(f => `<th>${f.slice(5)}</th>`).join('')}</tr></thead>
