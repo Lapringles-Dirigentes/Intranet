@@ -499,22 +499,28 @@
   window.nuevoProgramaForm = (programaExistente) => {
     if (programaExistente) {
       programaState = JSON.parse(JSON.stringify(programaExistente));
+      // Compatibilidad con programas viejos guardados con el formato de tabla (actividad, sin nombre/nota/etc)
+      programaState.fechas.forEach(f => f.filas.forEach(r => {
+        if (r.actividad !== undefined && r.nombre === undefined) r.nombre = r.actividad;
+      }));
+      if (programaState.objetivoCiclo === undefined) programaState.objetivoCiclo = '';
     } else {
       const hoy = new Date();
       programaState = {
         editId: null, rama: 'Manada', mes: MESES_PROGRAMA[hoy.getMonth()], anio: hoy.getFullYear(),
         tituloDocumento: `MANADA AÑO ${hoy.getFullYear()}`, planificacion: 'Mensual',
         jefatura: [{ rol: '', nombre: '' }],
-        lema: '', marcoSimbolico: '', importancia: '',
+        lema: '', marcoSimbolico: '', importancia: '', objetivoCiclo: '',
         metaAnual: [{ titulo: '', texto: '' }],
         objetivosMes: [{ titulo: '', texto: '' }],
         metasMes: [{ titulo: '', texto: '' }],
-        fechas: [{ fecha: '', filas: [{ hora: '', actividad: '', desarrollo: '' }] }]
+        fechas: [{ fecha: '', filas: [nuevaActividadVacia()] }]
       };
     }
     renderProgramaForm();
     document.getElementById('programa-form-wrap').scrollIntoView({ behavior: 'smooth' });
   };
+  function nuevaActividadVacia() { return { hora: '', nombre: '', desarrollo: '', nota: '', materiales: '', lugar: '', encargado: '', promesa: false }; }
 
   function sincronizarProgramaDesdeDOM() {
     if (!programaState) return;
@@ -527,6 +533,7 @@
     programaState.lema = g('pf-lema').value;
     programaState.marcoSimbolico = g('pf-marco').value;
     programaState.importancia = g('pf-importancia').value;
+    programaState.objetivoCiclo = g('pf-objetivociclo').value;
     programaState.jefatura.forEach((_, i) => {
       programaState.jefatura[i] = { rol: g(`jef-rol-${i}`)?.value || '', nombre: g(`jef-nombre-${i}`)?.value || '' };
     });
@@ -538,17 +545,26 @@
     programaState.fechas.forEach((f, fi) => {
       f.fecha = g(`fecha-${fi}`)?.value || '';
       f.filas.forEach((_, ri) => {
-        f.filas[ri] = { hora: g(`fila-hora-${fi}-${ri}`)?.value || '', actividad: g(`fila-act-${fi}-${ri}`)?.value || '', desarrollo: g(`fila-des-${fi}-${ri}`)?.value || '' };
+        f.filas[ri] = {
+          hora: g(`act-hora-${fi}-${ri}`)?.value || '',
+          nombre: g(`act-nombre-${fi}-${ri}`)?.value || '',
+          desarrollo: g(`act-desarrollo-${fi}-${ri}`)?.value || '',
+          nota: g(`act-nota-${fi}-${ri}`)?.value || '',
+          materiales: g(`act-materiales-${fi}-${ri}`)?.value || '',
+          lugar: g(`act-lugar-${fi}-${ri}`)?.value || '',
+          encargado: g(`act-encargado-${fi}-${ri}`)?.value || '',
+          promesa: g(`act-promesa-${fi}-${ri}`)?.checked || false
+        };
       });
     });
   }
 
   window.agregarFilaSimple = (campo) => { sincronizarProgramaDesdeDOM(); programaState[campo].push({ rol: '', nombre: '', titulo: '', texto: '' }); renderProgramaForm(); };
   window.quitarFilaSimple = (campo, i) => { sincronizarProgramaDesdeDOM(); programaState[campo].splice(i, 1); if (programaState[campo].length === 0) programaState[campo].push({}); renderProgramaForm(); };
-  window.agregarFecha = () => { sincronizarProgramaDesdeDOM(); programaState.fechas.push({ fecha: '', filas: [{ hora: '', actividad: '', desarrollo: '' }] }); renderProgramaForm(); };
-  window.quitarFecha = (fi) => { sincronizarProgramaDesdeDOM(); programaState.fechas.splice(fi, 1); if (programaState.fechas.length === 0) programaState.fechas.push({ fecha: '', filas: [{ hora: '', actividad: '', desarrollo: '' }] }); renderProgramaForm(); };
-  window.agregarFilaActividad = (fi) => { sincronizarProgramaDesdeDOM(); programaState.fechas[fi].filas.push({ hora: '', actividad: '', desarrollo: '' }); renderProgramaForm(); };
-  window.quitarFilaActividad = (fi, ri) => { sincronizarProgramaDesdeDOM(); programaState.fechas[fi].filas.splice(ri, 1); if (programaState.fechas[fi].filas.length === 0) programaState.fechas[fi].filas.push({ hora:'', actividad:'', desarrollo:'' }); renderProgramaForm(); };
+  window.agregarFecha = () => { sincronizarProgramaDesdeDOM(); programaState.fechas.push({ fecha: '', filas: [nuevaActividadVacia()] }); renderProgramaForm(); };
+  window.quitarFecha = (fi) => { sincronizarProgramaDesdeDOM(); programaState.fechas.splice(fi, 1); if (programaState.fechas.length === 0) programaState.fechas.push({ fecha: '', filas: [nuevaActividadVacia()] }); renderProgramaForm(); };
+  window.agregarFilaActividad = (fi) => { sincronizarProgramaDesdeDOM(); programaState.fechas[fi].filas.push(nuevaActividadVacia()); renderProgramaForm(); };
+  window.quitarFilaActividad = (fi, ri) => { sincronizarProgramaDesdeDOM(); programaState.fechas[fi].filas.splice(ri, 1); if (programaState.fechas[fi].filas.length === 0) programaState.fechas[fi].filas.push(nuevaActividadVacia()); renderProgramaForm(); };
 
   function renderProgramaForm() {
     const p = programaState;
@@ -569,7 +585,7 @@
       </div>
 
       <div class="programa-form-section">
-        <h4>Jefatura</h4>
+        <h4>Jefatura <span class="opcional-tag">(opcional — dejar vacío si ya se cargó otro mes)</span></h4>
         ${p.jefatura.map((j,i) => `
           <div class="programa-dyn-row">
             <input id="jef-rol-${i}" placeholder="Rol (ej: Akela)" value="${escapeHtml(j.rol||'')}">
@@ -583,21 +599,47 @@
         <h4>Lema y Marco Simbólico</h4>
         <input id="pf-lema" placeholder="Lema (ej: ¡Siempre Mejor!)" value="${escapeHtml(p.lema)}">
         <input id="pf-marco" placeholder="Marco Simbólico" value="${escapeHtml(p.marcoSimbolico)}" style="margin-top:8px;">
-        <label style="font-size:11px; color:var(--text-sec); display:block; margin:8px 0 3px;">Importancia de la formación (párrafo)</label>
+        <label style="font-size:11px; color:var(--text-sec); display:block; margin:8px 0 3px;">Importancia de la formación <span class="opcional-tag">(opcional)</span></label>
         <textarea id="pf-importancia" style="min-height:70px;">${escapeHtml(p.importancia)}</textarea>
       </div>
 
-      ${['metaAnual','objetivosMes','metasMes'].map(campo => `
-        <div class="programa-form-section">
-          <h4>${campo === 'metaAnual' ? 'Meta Anual' : campo === 'objetivosMes' ? 'Objetivos del mes' : 'Metas del mes'}</h4>
-          ${p[campo].map((it,i) => `
-            <div class="programa-dyn-row">
-              <input id="${campo}-titulo-${i}" placeholder="Título en negrita" value="${escapeHtml(it.titulo||'')}">
-              <textarea id="${campo}-texto-${i}" placeholder="Descripción">${escapeHtml(it.texto||'')}</textarea>
-              <button class="btn-quitar-fila" onclick="quitarFilaSimple('${campo}',${i})">✕</button>
-            </div>`).join('')}
-          <button class="btn-agregar-fila" onclick="agregarFilaSimple('${campo}')">+ Agregar</button>
-        </div>`).join('')}
+      <div class="programa-form-section">
+        <h4>Meta Anual</h4>
+        ${p.metaAnual.map((it,i) => `
+          <div class="programa-dyn-row">
+            <input id="metaAnual-titulo-${i}" placeholder="Título en negrita (opcional)" value="${escapeHtml(it.titulo||'')}">
+            <textarea id="metaAnual-texto-${i}" placeholder="Descripción">${escapeHtml(it.texto||'')}</textarea>
+            <button class="btn-quitar-fila" onclick="quitarFilaSimple('metaAnual',${i})">✕</button>
+          </div>`).join('')}
+        <button class="btn-agregar-fila" onclick="agregarFilaSimple('metaAnual')">+ Agregar</button>
+      </div>
+
+      <div class="programa-form-section">
+        <h4>Objetivo de "Ciclo de programa" <span class="opcional-tag">(opcional)</span></h4>
+        <textarea id="pf-objetivociclo" placeholder='Ej: En este ciclo el objetivo será...'>${escapeHtml(p.objetivoCiclo)}</textarea>
+      </div>
+
+      <div class="programa-form-section">
+        <h4>Objetivo por mes</h4>
+        ${p.objetivosMes.map((it,i) => `
+          <div class="programa-dyn-row">
+            <input id="objetivosMes-titulo-${i}" placeholder="Mes (ej: Junio)" value="${escapeHtml(it.titulo||'')}" style="max-width:130px;">
+            <textarea id="objetivosMes-texto-${i}" placeholder='Objetivo de ese mes'>${escapeHtml(it.texto||'')}</textarea>
+            <button class="btn-quitar-fila" onclick="quitarFilaSimple('objetivosMes',${i})">✕</button>
+          </div>`).join('')}
+        <button class="btn-agregar-fila" onclick="agregarFilaSimple('objetivosMes')">+ Agregar mes</button>
+      </div>
+
+      <div class="programa-form-section">
+        <h4>Metas del mes <span class="opcional-tag">(opcional)</span></h4>
+        ${p.metasMes.map((it,i) => `
+          <div class="programa-dyn-row">
+            <input id="metasMes-titulo-${i}" placeholder="Título en negrita" value="${escapeHtml(it.titulo||'')}">
+            <textarea id="metasMes-texto-${i}" placeholder="Descripción">${escapeHtml(it.texto||'')}</textarea>
+            <button class="btn-quitar-fila" onclick="quitarFilaSimple('metasMes',${i})">✕</button>
+          </div>`).join('')}
+        <button class="btn-agregar-fila" onclick="agregarFilaSimple('metasMes')">+ Agregar</button>
+      </div>
 
       <div class="programa-form-section">
         <h4>Desarrollo de Actividades</h4>
@@ -607,15 +649,23 @@
               <input id="fecha-${fi}" type="date" value="${f.fecha||''}">
               <button class="btn-quitar-fila" onclick="quitarFecha(${fi})">✕ Quitar fecha</button>
             </div>
-            <div class="fila-tabla-header"><span>Hora</span><span>Actividad</span><span>Desarrollo</span><span></span></div>
             ${f.filas.map((r,ri) => `
-              <div class="fila-tabla-row">
-                <input id="fila-hora-${fi}-${ri}" placeholder="15:00hrs" value="${escapeHtml(r.hora||'')}">
-                <input id="fila-act-${fi}-${ri}" placeholder="Actividad" value="${escapeHtml(r.actividad||'')}">
-                <textarea id="fila-des-${fi}-${ri}" placeholder="Desarrollo">${escapeHtml(r.desarrollo||'')}</textarea>
-                <button class="btn-quitar-fila" onclick="quitarFilaActividad(${fi},${ri})">✕</button>
+              <div class="actividad-block-form">
+                <div class="actividad-block-top">
+                  <label class="actividad-hora-label">Hora <input id="act-hora-${fi}-${ri}" type="time" value="${escapeHtml(r.hora||'')}"></label>
+                  <label class="actividad-promesa-check"><input id="act-promesa-${fi}-${ri}" type="checkbox" ${r.promesa?'checked':''}> 🎗️ Es una promesa</label>
+                  <button class="btn-quitar-fila" onclick="quitarFilaActividad(${fi},${ri})">✕ Quitar</button>
+                </div>
+                <input id="act-nombre-${fi}-${ri}" placeholder="Nombre de la actividad" value="${escapeHtml(r.nombre||'')}" style="margin-top:6px;">
+                <textarea id="act-desarrollo-${fi}-${ri}" placeholder="Desarrollo (opcional)" style="margin-top:6px;">${escapeHtml(r.desarrollo||'')}</textarea>
+                <textarea id="act-nota-${fi}-${ri}" placeholder="Nota (opcional)" style="margin-top:6px;">${escapeHtml(r.nota||'')}</textarea>
+                <div class="form-row" style="margin-top:6px;">
+                  <input id="act-materiales-${fi}-${ri}" placeholder="Materiales (opcional)" value="${escapeHtml(r.materiales||'')}">
+                  <input id="act-lugar-${fi}-${ri}" placeholder="Lugar (opcional)" value="${escapeHtml(r.lugar||'')}">
+                  <input id="act-encargado-${fi}-${ri}" placeholder="Encargado (opcional)" value="${escapeHtml(r.encargado||'')}">
+                </div>
               </div>`).join('')}
-            <button class="btn-agregar-fila" onclick="agregarFilaActividad(${fi})">+ Agregar fila</button>
+            <button class="btn-agregar-fila" onclick="agregarFilaActividad(${fi})">+ Agregar actividad/horario</button>
           </div>`).join('')}
         <button class="btn-agregar-fila" onclick="agregarFecha()">+ Agregar otra fecha de reunión</button>
       </div>
@@ -688,58 +738,110 @@
     </div>`;
   }
 
-  async function generarProgramaPDF(p) {
-    const pages = [];
-    pages.push(`<div class="pdf-page">
-      ${pdfHeaderHTML(p)}
-      <div class="pdf-title">${escapeHtml(p.tituloDocumento)}</div>
-      <div class="pdf-body-text" style="text-align:center; text-decoration:underline; font-weight:700;">Programa ${escapeHtml(p.mes)} – ${escapeHtml(p.rama)}.</div>
-      <div class="pdf-body-text"><b>Planificación:</b> ${escapeHtml(p.planificacion)}</div>
-      <div class="pdf-section-title">Jefatura:</div>
-      <ul class="pdf-list">${p.jefatura.map(j => `<li>${escapeHtml(j.rol)} - (${escapeHtml(j.nombre)})</li>`).join('')}</ul>
-      <div class="pdf-body-text"><b>Lema:</b> ${escapeHtml(p.lema)}</div>
-      <div class="pdf-body-text"><b>Marco Simbólico:</b> "${escapeHtml(p.marcoSimbolico)}"</div>
-      <div class="pdf-hr"></div>
-      <div class="pdf-section-title">Importancia de la formación:</div>
-      <div class="pdf-body-text">${escapeHtml(p.importancia)}</div>
-      <div class="pdf-hr"></div>
-      <div class="pdf-section-title">Meta Anual:</div>
-      <ul class="pdf-list">${p.metaAnual.map(m => `<li><b>${escapeHtml(m.titulo)}:</b> ${escapeHtml(m.texto)}</li>`).join('')}</ul>
-      <div class="pdf-footer">Página 1</div>
-    </div>`);
-    pages.push(`<div class="pdf-page">
-      ${pdfHeaderHTML(p)}
-      <div class="pdf-section-title">Objetivos del mes:</div>
-      <ul class="pdf-list">${p.objetivosMes.map(o => `<li><b>${escapeHtml(o.titulo)}:</b> ${escapeHtml(o.texto)}</li>`).join('')}</ul>
-      <div class="pdf-section-title">Metas del mes:</div>
-      <ul class="pdf-list">${p.metasMes.map(m => `<li><b>${escapeHtml(m.titulo)}:</b> ${escapeHtml(m.texto)}</li>`).join('')}</ul>
-      <div class="pdf-footer">Página 2</div>
-    </div>`);
-    p.fechas.forEach((f, idx) => {
-      const fechaFmt = f.fecha ? f.fecha.split('-').reverse().join('/') : '';
-      pages.push(`<div class="pdf-page">
-        ${pdfHeaderHTML(p)}
-        <table class="pdf-table">
-          <tr><td colspan="3" class="pdf-fecha-title">Fecha ${fechaFmt}</td></tr>
-          <tr><th style="width:80px;">Hora</th><th>Actividad</th><th>Desarrollo</th></tr>
-          ${f.filas.map(r => `<tr><td class="hora-cell">${escapeHtml(r.hora)}</td><td>${escapeHtml(r.actividad)}</td><td>${escapeHtml(r.desarrollo)}</td></tr>`).join('')}
-        </table>
-        <div class="pdf-footer">Página ${3 + idx}</div>
-      </div>`);
+  function actividadBlockHTML(r) {
+    let html = `<div class="pdf-activity">`;
+    html += `<div class="pdf-activity-hora">● ${escapeHtml(r.hora || '')} hs${r.promesa ? ' <span class="pdf-promesa-tag">🎗️ Promesa</span>' : ''}</div>`;
+    if (r.nombre) html += `<div class="pdf-body-text"><b>Nombre:</b> ${escapeHtml(r.nombre)}</div>`;
+    if (r.desarrollo) html += `<div class="pdf-body-text"><b>Desarrollo:</b> ${escapeHtml(r.desarrollo)}</div>`;
+    if (r.nota) html += `<div class="pdf-body-text"><b>Nota:</b> ${escapeHtml(r.nota).replace(/\n/g,'<br>')}</div>`;
+    if (r.materiales) html += `<div class="pdf-body-text"><b>Materiales:</b> ${escapeHtml(r.materiales)}</div>`;
+    if (r.lugar) html += `<div class="pdf-body-text"><b>Lugar:</b> ${escapeHtml(r.lugar)}</div>`;
+    if (r.encargado) html += `<div class="pdf-body-text"><b>Encargado:</b> ${escapeHtml(r.encargado)}</div>`;
+    html += `</div>`;
+    return html;
+  }
+
+  const PDF_PAGE_W = 794, PDF_PAGE_H = 1123, PDF_PAD = 40;
+  async function medirAlturaPx(html) {
+    const div = document.createElement('div');
+    div.style.position = 'fixed'; div.style.left = '-9999px'; div.style.top = '0';
+    div.style.width = (PDF_PAGE_W - PDF_PAD * 2) + 'px';
+    div.className = 'pdf-measure';
+    div.innerHTML = html;
+    document.body.appendChild(div);
+    await new Promise(r => setTimeout(r, 30));
+    const h = div.offsetHeight;
+    document.body.removeChild(div);
+    return h;
+  }
+
+  // Corta los bloques de actividad de una fecha en tantas páginas como haga falta según el alto real
+  async function paginarFecha(f, alturaHeaderPx, primeraFechaDelBloque) {
+    const fechaFmt = f.fecha ? f.fecha.split('-').reverse().join('/') : '';
+    const fechaBoxHTML = `<div class="pdf-fecha-box">Fecha: ${fechaFmt}</div>`;
+    const bloques = [fechaBoxHTML, ...f.filas.map(actividadBlockHTML)];
+    const alturas = [];
+    for (const b of bloques) alturas.push(await medirAlturaPx(b));
+
+    const alturaDisponible = PDF_PAGE_H - PDF_PAD * 2 - alturaHeaderPx - 40; // 40px margen para el pie "Página N"
+    const paginas = [];
+    let actual = []; let alturaActual = 0;
+    bloques.forEach((b, i) => {
+      const h = alturas[i] + 4;
+      if (alturaActual + h > alturaDisponible && actual.length > 0) {
+        paginas.push(actual);
+        actual = [];
+        alturaActual = 0;
+      }
+      actual.push(b);
+      alturaActual += h;
     });
+    if (actual.length) paginas.push(actual);
+    return paginas;
+  }
+
+  async function generarProgramaPDF(p) {
+    const alturaHeader = await medirAlturaPx(pdfHeaderHTML(p));
+    const pages = [];
+
+    let front = '';
+    front += `<div class="pdf-title">${escapeHtml(p.tituloDocumento)}</div>`;
+    front += `<div class="pdf-body-text" style="text-align:center; text-decoration:underline; font-weight:700;">Programa ${escapeHtml(p.mes)} – ${escapeHtml(p.rama)}.</div>`;
+    if (p.planificacion) front += `<div class="pdf-body-text"><b>Planificación:</b> ${escapeHtml(p.planificacion)}</div>`;
+    if (p.jefatura.some(j => j.nombre || j.rol)) {
+      front += `<div class="pdf-section-title">Jefatura:</div><ul class="pdf-list">${p.jefatura.filter(j => j.nombre || j.rol).map(j => `<li>${escapeHtml(j.rol)} - (${escapeHtml(j.nombre)})</li>`).join('')}</ul>`;
+    }
+    if (p.lema) front += `<div class="pdf-body-text"><b>Lema:</b> ${escapeHtml(p.lema)}</div>`;
+    if (p.marcoSimbolico) front += `<div class="pdf-body-text"><b>Marco Simbólico:</b> "${escapeHtml(p.marcoSimbolico)}"</div>`;
+    if (p.importancia) front += `<div class="pdf-hr"></div><div class="pdf-section-title">Importancia de la formación:</div><div class="pdf-body-text">${escapeHtml(p.importancia)}</div>`;
+    const metaAnualLlena = p.metaAnual.filter(m => m.texto || m.titulo);
+    if (metaAnualLlena.length) front += `<div class="pdf-hr"></div><div class="pdf-section-title">Meta Anual:</div><ul class="pdf-list">${metaAnualLlena.map(m => `<li>${m.titulo?`<b>${escapeHtml(m.titulo)}:</b> `:''}${escapeHtml(m.texto)}</li>`).join('')}</ul>`;
+    if (p.objetivoCiclo) front += `<div class="pdf-body-text"><b>Objetivo de "Ciclo de programa":</b> "${escapeHtml(p.objetivoCiclo)}"</div>`;
+    const objMesLleno = p.objetivosMes.filter(o => o.texto || o.titulo);
+    if (objMesLleno.length) front += `<div class="pdf-section-title">Objetivo por mes:</div><ul class="pdf-list">${objMesLleno.map(o => `<li>${o.titulo?`<b>${escapeHtml(o.titulo)}:</b> `:''}"${escapeHtml(o.texto)}"</li>`).join('')}</ul>`;
+    const metasMesLlena = p.metasMes.filter(m => m.texto || m.titulo);
+    if (metasMesLlena.length) front += `<div class="pdf-section-title">Metas del mes:</div><ul class="pdf-list">${metasMesLlena.map(m => `<li>${m.titulo?`<b>${escapeHtml(m.titulo)}:</b> `:''}${escapeHtml(m.texto)}</li>`).join('')}</ul>`;
+
+    pages.push(front);
+
+    let primeraPaginaActividades = true;
+    for (const f of p.fechas) {
+      const paginasFecha = await paginarFecha(f, alturaHeader);
+      for (const chunk of paginasFecha) {
+        let contenido = '';
+        if (primeraPaginaActividades) { contenido += `<div class="pdf-section-title">Desarrollo de Actividades:</div>`; primeraPaginaActividades = false; }
+        contenido += chunk.join('');
+        pages.push(contenido);
+      }
+    }
 
     const cont = document.getElementById('programa-pdf-render');
-    cont.innerHTML = pages.join('');
-    await new Promise(r => setTimeout(r, 200));
+    cont.innerHTML = pages.map((contenido, i) => `
+      <div class="pdf-page">
+        ${pdfHeaderHTML(p)}
+        ${contenido}
+        <div class="pdf-footer">Página ${i + 1}</div>
+      </div>`).join('');
+    await new Promise(r => setTimeout(r, 250));
 
     try {
       const pageEls = cont.querySelectorAll('.pdf-page');
-      const pdf = new window.jspdf.jsPDF({ unit: 'px', format: [794, 1123] });
+      const pdf = new window.jspdf.jsPDF({ unit: 'px', format: [PDF_PAGE_W, PDF_PAGE_H] });
       for (let i = 0; i < pageEls.length; i++) {
         const canvas = await html2canvas(pageEls[i], { scale: 2, useCORS: true });
         const imgData = canvas.toDataURL('image/jpeg', 0.92);
-        if (i > 0) pdf.addPage([794, 1123]);
-        pdf.addImage(imgData, 'JPEG', 0, 0, 794, 1123);
+        if (i > 0) pdf.addPage([PDF_PAGE_W, PDF_PAGE_H]);
+        pdf.addImage(imgData, 'JPEG', 0, 0, PDF_PAGE_W, PDF_PAGE_H);
       }
       pdf.save(`Programa_${p.mes}_${p.rama}_${p.anio}.pdf`);
     } catch (err) {
@@ -1390,13 +1492,18 @@
   .fecha-actividad-block { border: 1.5px solid var(--azul-cl); border-radius: 10px; padding: 12px; margin-bottom: 14px; }
   .fecha-actividad-block .fecha-header { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
   .fecha-actividad-block .fecha-header input[type=date] { flex: 1; }
-  .fila-tabla-header { display: grid; grid-template-columns: 90px 1fr 1fr 34px; gap: 6px; font-size: 10.5px; font-weight: 700; color: var(--text-sec); margin-bottom: 4px; text-transform: uppercase; }
-  .fila-tabla-row { display: grid; grid-template-columns: 90px 1fr 1fr 34px; gap: 6px; margin-bottom: 6px; align-items: start; }
-  .fila-tabla-row input, .fila-tabla-row textarea { font-size: 12.5px; padding: 7px 8px; }
-  .fila-tabla-row textarea { min-height: 40px; }
+  .opcional-tag { font-size: 10.5px; font-weight: 400; color: var(--text-sec); text-transform: none; }
+  .actividad-block-form { background: white; border: 1px solid var(--crema); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
+  .actividad-block-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .actividad-hora-label { font-size: 11px; color: var(--text-sec); display: flex; align-items: center; gap: 6px; }
+  .actividad-hora-label input[type=time] { width: 110px; padding: 6px 8px; }
+  .actividad-promesa-check { font-size: 12px; display: flex; align-items: center; gap: 5px; color: var(--dorado); font-weight: 600; cursor: pointer; }
+  .actividad-promesa-check input { width: 15px; height: 15px; }
+  .actividad-block-form textarea { min-height: 44px; width: 100%; margin-top: 6px; }
+  .actividad-block-form input { width: 100%; }
 
   /* Documento generado (fuera de pantalla, usado para el PDF) */
-  #programa-pdf-render { position: fixed; left: -9999px; top: 0; width: 794px; background: white; }
+  #programa-pdf-render, .pdf-measure { position: fixed; left: -9999px; top: 0; width: 794px; background: white; }
   .pdf-page { width: 794px; min-height: 1123px; padding: 36px 40px; background: white; box-sizing: border-box; font-family: 'Source Sans 3', sans-serif; color: #111; position: relative; }
   .pdf-header { display: flex; align-items: center; gap: 14px; border-bottom: 2px solid #1a3a6b; padding-bottom: 14px; margin-bottom: 18px; }
   .pdf-header img.pdf-logo-rama { width: 62px; height: 62px; object-fit: contain; }
@@ -1407,13 +1514,13 @@
   .pdf-title { text-align: center; font-family: 'Playfair Display', serif; font-size: 24px; font-weight: 700; margin: 10px 0 18px; color: #1a3a6b; }
   .pdf-section-title { font-weight: 700; text-decoration: underline; font-size: 14px; margin: 14px 0 8px; }
   .pdf-body-text { font-size: 13px; line-height: 1.6; margin-bottom: 6px; }
+  .pdf-list { padding-left: 20px; }
   .pdf-list li { font-size: 13px; line-height: 1.5; margin-bottom: 6px; }
   .pdf-hr { border: none; border-top: 1px solid #999; margin: 14px 0; }
-  .pdf-table { width: 100%; border-collapse: collapse; margin-bottom: 16px; font-size: 12px; }
-  .pdf-table th { background: #d9d9d9; border: 1px solid #999; padding: 6px 8px; text-align: left; }
-  .pdf-table td { border: 1px solid #999; padding: 6px 8px; vertical-align: top; }
-  .pdf-table td.hora-cell { font-weight: 700; white-space: nowrap; }
-  .pdf-fecha-title { background: #ddd; font-weight: 700; padding: 6px 8px; border: 1px solid #999; text-align: center; }
+  .pdf-fecha-box { border: 1.5px solid #333; display: inline-block; padding: 6px 16px; font-weight: 700; font-size: 13.5px; margin-bottom: 14px; }
+  .pdf-activity { margin-bottom: 14px; }
+  .pdf-activity-hora { font-weight: 700; font-size: 13.5px; margin-bottom: 3px; }
+  .pdf-promesa-tag { background: #fff3cd; color: #8a6d00; border-radius: 3px; padding: 1px 7px; font-size: 11px; font-weight: 700; }
   .pdf-footer { position: absolute; bottom: 20px; right: 40px; font-size: 11px; color: #666; }
 
   /* ---- FOOTER ---- */
