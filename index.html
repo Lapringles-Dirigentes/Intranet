@@ -445,13 +445,15 @@
       await setDoc(doc(db, "autorizados", email), { autorizado: true, ramas, esJefe: !!esJefe }, { merge: true });
       await sincronizarMirrorPublico(email, [], esJefe ? ramas : []);
       window.renderPermisosPanel();
+      alert('✅ Acceso aprobado para ' + email + '.');
     } catch (err) { console.error(err); alert('⚠️ No se pudo aprobar: ' + err.message); }
   };
   window.aprobarComoAdmin = async (email) => {
     try {
-      await window.hacerAdmin(email);
+      await window.hacerAdmin(email, true);
       await setDoc(doc(db, "autorizados", email), { autorizado: true }, { merge: true });
       window.renderPermisosPanel();
+      alert('✅ ' + email + ' aprobado/a como administrador.');
     } catch (err) { console.error(err); alert('⚠️ No se pudo aprobar como admin: ' + err.message); }
   };
   window.eliminarAutorizado = async (email) => {
@@ -464,21 +466,24 @@
         if (ramasViejas.length) await sincronizarMirrorPublico(email, ramasViejas, []);
       }
       window.renderPermisosPanel();
+      alert('✅ Acceso de ' + email + ' eliminado.');
     } catch (err) { console.error(err); alert('⚠️ No se pudo eliminar: ' + err.message); }
   };
-  window.otorgarAccesoDirecto = async (email, ramas, esJefe) => {
+  window.otorgarAccesoDirecto = async (email, ramas, esJefe, silencioso) => {
     try {
       email = email.toLowerCase();
       await setDoc(doc(db, "autorizados", email), { autorizado: true, ramas, esJefe: !!esJefe, agregadoPor: sesionEmail, fecha: Date.now() }, { merge: true });
       await sincronizarMirrorPublico(email, [], esJefe ? ramas : []);
       window.renderPermisosPanel();
+      if (!silencioso) alert('✅ Acceso otorgado a ' + email + '.');
     } catch (err) { console.error(err); alert('⚠️ No se pudo dar el acceso: ' + err.message); }
   };
   window.otorgarAccesoDirectoAdmin = async (email, ramas, esJefe) => {
     try {
-      await window.otorgarAccesoDirecto(email, ramas, esJefe);
-      await window.hacerAdmin(email.toLowerCase());
+      await window.otorgarAccesoDirecto(email, ramas, esJefe, true);
+      await window.hacerAdmin(email.toLowerCase(), true);
       window.renderPermisosPanel();
+      alert('✅ Acceso admin otorgado a ' + email + '.');
     } catch (err) { console.error(err); alert('⚠️ No se pudo dar el acceso admin: ' + err.message); }
   };
   window.guardarRamasAutorizado = async (email, ramasNuevas, esJefeNuevo) => {
@@ -489,14 +494,18 @@
       await setDoc(doc(db, "autorizados", email), { ramas: ramasNuevas, esJefe: !!esJefeNuevo }, { merge: true });
       await sincronizarMirrorPublico(email, esJefeViejo ? ramasViejas : [], esJefeNuevo ? ramasNuevas : []);
       window.renderPermisosPanel();
+      alert('✅ Cambios guardados para ' + email + '.');
     } catch (err) { console.error(err); alert('⚠️ No se pudieron guardar los cambios: ' + err.message); }
   };
-  window.hacerAdmin = async (email) => {
-    try { await setDoc(doc(db, "administradores", email), { agregadoPor: sesionEmail, fecha: Date.now() }); window.renderPermisosPanel(); }
-    catch (err) { console.error(err); alert('⚠️ No se pudo hacer admin: ' + err.message); }
+  window.hacerAdmin = async (email, silencioso) => {
+    try {
+      await setDoc(doc(db, "administradores", email), { agregadoPor: sesionEmail, fecha: Date.now() });
+      window.renderPermisosPanel();
+      if (!silencioso) alert('✅ ' + email + ' ahora es administrador.');
+    } catch (err) { console.error(err); alert('⚠️ No se pudo hacer admin: ' + err.message); }
   };
   window.quitarAdmin = async (email) => {
-    try { await deleteDoc(doc(db, "administradores", email)); window.renderPermisosPanel(); }
+    try { await deleteDoc(doc(db, "administradores", email)); window.renderPermisosPanel(); alert('✅ ' + email + ' ya no es administrador.'); }
     catch (err) { console.error(err); alert('⚠️ No se pudo quitar el admin: ' + err.message); }
   };
 
