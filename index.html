@@ -358,6 +358,13 @@
     Object.values(jefesRamaPublicoCache).forEach(arr => (arr || []).forEach(e => set.add(e)));
     return Array.from(set);
   }
+  // Lo mismo, pero sumando también a todos los administradores (fijos + los agregados).
+  function todosLosJefesYAdmins() {
+    const set = new Set(todosLosJefes());
+    ADMINS_FIJOS.forEach(e => set.add(e));
+    administradoresCache.forEach(a => set.add(a.email));
+    return Array.from(set);
+  }
 
   async function verificarAccesoIntranet(email) {
     if (ADMINS_FIJOS.includes(email)) return { estado: 'ok', rol: 'admin' };
@@ -420,7 +427,7 @@
 
   // --- Permisos generales de Intranet (autorizados / administradores) ---
   // Cada dirigente autorizado tiene un array "ramas" (a las que pertenece) y un flag "esJefe":
-  // solo quienes tienen esJefe=true reciben las alertas de promesa de sus ramas.
+  // solo quienes tienen esJefe=true (o son admin) reciben las alertas de promesa.
   function ramasDe(p) { return p && (p.ramas || (p.rama ? [p.rama] : [])) || []; }
   async function sincronizarMirrorPublico(email, ramasViejas, ramasNuevas) {
     ramasViejas = ramasViejas || []; ramasNuevas = ramasNuevas || [];
@@ -434,70 +441,69 @@
     await setDoc(ref, updates, { merge: true });
   }
   window.aprobarAcceso = async (email, ramas, esJefe) => {
-    await updateDoc(doc(db, "autorizados", email), { autorizado: true, ramas, esJefe: !!esJefe });
-    await sincronizarMirrorPublico(email, [], esJefe ? ramas : []);
+    try {
+      await setDoc(doc(db, "autorizados", email), { autorizado: true, ramas, esJefe: !!esJefe }, { merge: true });
+      await sincronizarMirrorPublico(email, [], esJefe ? ramas : []);
+      window.renderPermisosPanel();
+    } catch (err) { console.error(err); alert('⚠️ No se pudo aprobar: ' + err.message); }
   };
   window.aprobarComoAdmin = async (email) => {
-    await window.hacerAdmin(email);
-    await updateDoc(doc(db, "autorizados", email), { autorizado: true });
+    try {
+      await window.hacerAdmin(email);
+      await setDoc(doc(db, "autorizados", email), { autorizado: true }, { merge: true });
+      window.renderPermisosPanel();
+    } catch (err) { console.error(err); alert('⚠️ No se pudo aprobar como admin: ' + err.message); }
   };
-  window.revocarAcceso = async (email) => {
-    const actual = autorizadosCache.find(a => a.email === email);
-    await updateDoc(doc(db, "autorizados", email), { autorizado: false });
-    const ramasViejas = ramasDe(actual);
-    if (actual && actual.esJefe && ramasViejas.length) await sincronizarMirrorPublico(email, ramasViejas, []);
+  window.eliminarAutorizado = async (email) => {
+    if (!confirm(`¿Eliminar definitivamente el acceso de ${email}? Vas a poder agregarlo de nuevo más adelante si hace falta.`)) return;
+    try {
+      const actual = autorizadosCache.find(a => a.email === email);
+      await deleteDoc(doc(db, "autorizados", email));
+      if (actual && actual.esJefe) {
+        const ramasViejas = ramasDe(actual);
+        if (ramasViejas.length) await sincronizarMirrorPublico(email, ramasViejas, []);
+      }
+      window.renderPermisosPanel();
+    } catch (err) { console.error(err); alert('⚠️ No se pudo eliminar: ' + err.message); }
   };
   window.otorgarAccesoDirecto = async (email, ramas, esJefe) => {
-    email = email.toLowerCase();
-    await setDoc(doc(db, "autorizados", email), { autorizado: true, ramas, esJefe: !!esJefe, agregadoPor: sesionEmail, fecha: Date.now() }, { merge: true });
-    await sincronizarMirrorPublico(email, [], esJefe ? ramas : []);
+    try {
+      email = email.toLowerCase();
+      await setDoc(doc(db, "autorizados", email), { autorizado: true, ramas, esJefe: !!esJefe, agregadoPor: sesionEmail, fecha: Date.now() }, { merge: true });
+      await sincronizarMirrorPublico(email, [], esJefe ? ramas : []);
+      window.renderPermisosPanel();
+    } catch (err) { console.error(err); alert('⚠️ No se pudo dar el acceso: ' + err.message); }
   };
   window.otorgarAccesoDirectoAdmin = async (email, ramas, esJefe) => {
-    await window.otorgarAccesoDirecto(email, ramas, esJefe);
-    await window.hacerAdmin(email.toLowerCase());
+    try {
+      await window.otorgarAccesoDirecto(email, ramas, esJefe);
+      await window.hacerAdmin(email.toLowerCase());
+      window.renderPermisosPanel();
+    } catch (err) { console.error(err); alert('⚠️ No se pudo dar el acceso admin: ' + err.message); }
   };
   window.guardarRamasAutorizado = async (email, ramasNuevas, esJefeNuevo) => {
-    const actual = autorizadosCache.find(a => a.email === email);
-    const ramasViejas = ramasDe(actual);
-    const esJefeViejo = actual ? !!actual.esJefe : false;
-    await updateDoc(doc(db, "autorizados", email), { ramas: ramasNuevas, esJefe: !!esJefeNuevo });
-    await sincronizarMirrorPublico(email, esJefeViejo ? ramasViejas : [], esJefeNuevo ? ramasNuevas : []);
-  };
-  window.hacerAdmin = async (email) => { await setDoc(doc(db, "administradores", email), { agregadoPor: sesionEmail, fecha: Date.now() }); };
-  window.quitarAdmin = async (email) => { await deleteDoc(doc(db, "administradores", email)); };
-
-
-  // ============ ALERTA DE PROMESA POR MAIL ============
-  window.marcarPromesa = async (jovenId) => {
-    const j = window.jovenesCache.find(x => x.id === jovenId);
-    if (!j) { alert('No se encontró el joven (recargá la lista e intentá de nuevo).'); return; }
-    const jovenNombre = `${j.nombre} ${j.apellido}`;
-    const rama = j.rama;
-    const marcadoPor = nombreDirigente();
-    if (!marcadoPor) { alert('Ingresá tu nombre arriba antes de marcar una promesa.'); return; }
-    if (!confirm(`¿Marcar la promesa de ${jovenNombre} (${rama}) con fecha de hoy?`)) return;
-    const fecha = new Date().toISOString().slice(0,10);
-    await updateDoc(doc(db, "jovenes", jovenId), { promesaHecha: true, fechaPromesa: fecha, actualizadoEn: serverTimestamp() });
-
-    const destinatarios = todosLosJefes();
-    if (destinatarios.length === 0) {
-      alert('✅ Promesa marcada. (Todavía no hay ningún jefe de rama cargado, no se envió alerta por mail — un admin puede cargarlos en Permisos.)');
-      return;
-    }
-    if (!window.emailjs || EMAILJS_PUBLIC_KEY.startsWith('PONÉ')) {
-      alert('✅ Promesa marcada. (El envío de mail todavía no está configurado — falta cargar los datos de EmailJS.)');
-      return;
-    }
     try {
-      await Promise.all(destinatarios.map(email => window.emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_PROMESA, {
-        to_email: email, joven_nombre: jovenNombre, rama, fecha: fecha.split('-').reverse().join('/'), marcado_por: marcadoPor
-      })));
-      alert('✅ Promesa marcada y aviso enviado a todos los jefes de rama.');
-    } catch (err) {
-      console.error('Error enviando alerta de promesa:', err);
-      alert('✅ Promesa marcada, pero hubo un error enviando el mail: ' + err.message);
-    }
+      const actual = autorizadosCache.find(a => a.email === email);
+      const ramasViejas = ramasDe(actual);
+      const esJefeViejo = actual ? !!actual.esJefe : false;
+      await setDoc(doc(db, "autorizados", email), { ramas: ramasNuevas, esJefe: !!esJefeNuevo }, { merge: true });
+      await sincronizarMirrorPublico(email, esJefeViejo ? ramasViejas : [], esJefeNuevo ? ramasNuevas : []);
+      window.renderPermisosPanel();
+    } catch (err) { console.error(err); alert('⚠️ No se pudieron guardar los cambios: ' + err.message); }
   };
+  window.hacerAdmin = async (email) => {
+    try { await setDoc(doc(db, "administradores", email), { agregadoPor: sesionEmail, fecha: Date.now() }); window.renderPermisosPanel(); }
+    catch (err) { console.error(err); alert('⚠️ No se pudo hacer admin: ' + err.message); }
+  };
+  window.quitarAdmin = async (email) => {
+    try { await deleteDoc(doc(db, "administradores", email)); window.renderPermisosPanel(); }
+    catch (err) { console.error(err); alert('⚠️ No se pudo quitar el admin: ' + err.message); }
+  };
+
+
+  // (La marca de "Promesa" ahora se hace únicamente desde el Programa mensual,
+  // tildando "Es una promesa" en la actividad correspondiente — ver más abajo.)
+
 
   // ============ PROGRAMA MENSUAL: formulario dinámico + generación de PDF ============
   const MESES_PROGRAMA = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
@@ -693,13 +699,13 @@
   window.cancelarProgramaForm = () => { programaState = null; document.getElementById('programa-form-wrap').innerHTML = ''; };
 
   async function enviarAlertaPromesaPrograma(rama, actividadesNuevas) {
-    const destinatarios = todosLosJefes();
+    const destinatarios = todosLosJefesYAdmins();
     if (destinatarios.length === 0 || !window.emailjs || EMAILJS_PUBLIC_KEY.startsWith('PONÉ')) return { enviado: false, motivo: destinatarios.length === 0 ? 'sin-jefes' : 'sin-emailjs' };
     try {
       for (const act of actividadesNuevas) {
         const fechaFmt = act.fecha ? act.fecha.split('-').reverse().join('/') : '';
         await Promise.all(destinatarios.map(email => window.emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_PROMESA, {
-          to_email: email, joven_nombre: act.nombre, rama, fecha: fechaFmt, marcado_por: sesionEmail
+          to_email: email, joven_nombre: act.nombre, rama, fecha: fechaFmt, hora: act.hora || '', marcado_por: sesionEmail
         })));
       }
       return { enviado: true };
@@ -719,7 +725,7 @@
     p.fechas.forEach(f => {
       f.filas.forEach(r => {
         if (r.promesa && !r.promesaNotificada) {
-          promesasNuevas.push({ nombre: r.nombre || 'Actividad de Promesa', fecha: f.fecha });
+          promesasNuevas.push({ nombre: r.nombre || 'Actividad de Promesa', fecha: f.fecha, hora: r.hora || '' });
           r.promesaNotificada = true;
         }
       });
@@ -904,6 +910,7 @@
 
   // ============ ACCESO UI (login gate compartido por Programa y Permisos) ============
   window.renderAccesoUI = () => {
+    actualizarNavPermisos();
     ['programa', 'permisos'].forEach(tab => {
       const gate = document.getElementById(`${tab}-login-gate`);
       const appDiv = document.getElementById(`${tab}-app`);
@@ -933,6 +940,17 @@
           </div>`;
       }
     });
+  };
+
+  // La solapa "Permisos" solo se puede abrir si sos admin — para el resto queda en gris.
+  function actualizarNavPermisos() {
+    const btn = document.getElementById('nav-permisos-btn');
+    if (!btn) return;
+    btn.classList.toggle('tab-btn-disabled', !sesionEsAdmin);
+  }
+  window.clickTabPermisos = () => {
+    if (!sesionEsAdmin) return; // no hace nada: la solapa está deshabilitada para no-admins
+    showTab('permisos');
   };
 
   // ============ PERMISOS: panel de administración ============
@@ -988,6 +1006,7 @@
               <div class="form-row">
                 <button class="btn-presentes-accion" onclick="aprobarAcceso('${p.email}', leerRamasSeleccionadas('rama-pend-${p.email}'), leerEsJefe('rama-pend-${p.email}'))">✅ Aprobar como dirigente</button>
                 <button class="btn-presentes-accion" style="background:var(--rojo)" onclick="aprobarComoAdmin('${p.email}')">👑 Aprobar como admin</button>
+                <button class="btn-presentes-accion" style="background:#aaa" onclick="eliminarAutorizado('${p.email}')">🗑️ Rechazar</button>
               </div>
             </div>`).join('')}` : ''}
 
@@ -999,7 +1018,7 @@
               <div class="form-row">
                 <button class="btn-presentes-accion" onclick="guardarRamasAutorizado('${p.email}', leerRamasSeleccionadas('rama-ap-${p.email}'), leerEsJefe('rama-ap-${p.email}'))">Guardar</button>
                 <button class="btn-presentes-accion" style="background:var(--rojo)" onclick="hacerAdmin('${p.email}')">👑 Hacer admin</button>
-                <button class="btn-presentes-accion" style="background:#aaa" onclick="revocarAcceso('${p.email}')">Revocar</button>
+                <button class="btn-presentes-accion" style="background:#aaa" onclick="eliminarAutorizado('${p.email}')">🗑️ Eliminar acceso</button>
               </div>
             </div>`).join('')}
 
@@ -1142,6 +1161,8 @@
   }
   .tab-btn:hover { color: var(--azul-med); }
   .tab-btn.active { color: var(--azul); border-bottom-color: var(--azul); }
+  .tab-btn.tab-btn-disabled { color: #c3c9d4 !important; cursor: not-allowed; }
+  .tab-btn.tab-btn-disabled:hover { color: #c3c9d4 !important; }
 
   /* ---- MAIN ---- */
   main { max-width: 980px; margin: 0 auto; padding: 28px 20px 48px; }
@@ -1641,7 +1662,7 @@
     <button class="tab-btn" onclick="showTab('presentes')">📋 Presentes</button>
     <button class="tab-btn" onclick="showTab('documentos')">📁 Documentos</button>
     <button class="tab-btn" onclick="showTab('programa')">📋 Programa</button>
-    <button class="tab-btn" onclick="showTab('permisos')">🔐 Permisos</button>
+    <button class="tab-btn tab-btn-disabled" id="nav-permisos-btn" onclick="clickTabPermisos()">🔐 Permisos</button>
     <a class="tab-btn" href="https://lapringles-dirigentes.github.io/ControlDeStock/" style="text-decoration:none; display:inline-block;">📦 Stock</a>
   </div>
 </nav>
@@ -1947,10 +1968,8 @@
         <div class="info">
           <strong>${j.nombre} ${j.apellido}</strong>
           <span>${j.rama} · ${window.calcularEdad(j.fechaNacimiento) ?? "—"} años · nació ${j.fechaNacimiento || "—"}</span>
-          ${j.promesaHecha ? `<span style="color:#2e7d32; font-weight:700;">🎗️ Prometió el ${j.fechaPromesa || ''}</span>` : ''}
         </div>
         <div class="joven-card-acciones">
-          ${!j.promesaHecha ? `<button onclick="marcarPromesa('${j.id}')" style="color:#c9960a">🎗️ Promesa</button>` : ''}
           <button onclick='abrirFormJoven(${JSON.stringify(j).replace(/'/g,"&apos;")})'>✏️ Editar</button>
           <button onclick="darDeBajaJoven('${j.id}')" style="color:#b01a1a">🗑️ Baja</button>
         </div>
