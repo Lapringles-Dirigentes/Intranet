@@ -411,39 +411,51 @@
   }
 
   // --- Permisos generales de Intranet (autorizados / administradores) ---
-  // Cada dirigente autorizado tiene un campo "rama" propio: define a qué rama pertenece
-  // y a qué jefes se les avisa cuando se marca una promesa de esa rama.
-  async function sincronizarMirrorPublico(email, ramaVieja, ramaNueva) {
+  // Cada dirigente autorizado tiene un array "ramas": puede pertenecer a una, varias, o todas.
+  function ramasDe(p) { return p && (p.ramas || (p.rama ? [p.rama] : [])) || []; }
+  async function sincronizarMirrorPublico(email, ramasViejas, ramasNuevas) {
+    ramasViejas = ramasViejas || []; ramasNuevas = ramasNuevas || [];
+    const aQuitar = ramasViejas.filter(r => !ramasNuevas.includes(r));
+    const aAgregar = ramasNuevas.filter(r => !ramasViejas.includes(r));
+    if (aQuitar.length === 0 && aAgregar.length === 0) return;
     const ref = doc(db, "config_publico", "jefes_rama");
-    if (ramaVieja && ramaVieja !== ramaNueva) {
-      await setDoc(ref, { [ramaVieja]: arrayRemove(email) }, { merge: true });
-    }
-    if (ramaNueva) {
-      await setDoc(ref, { [ramaNueva]: arrayUnion(email) }, { merge: true });
-    }
+    const updates = {};
+    aQuitar.forEach(r => updates[r] = arrayRemove(email));
+    aAgregar.forEach(r => updates[r] = arrayUnion(email));
+    await setDoc(ref, updates, { merge: true });
   }
-  window.aprobarAcceso = async (email, rama) => {
-    await updateDoc(doc(db, "autorizados", email), { autorizado: true, rama: rama || null });
-    await sincronizarMirrorPublico(email, null, rama);
+  window.aprobarAcceso = async (email, ramas) => {
+    await updateDoc(doc(db, "autorizados", email), { autorizado: true, ramas });
+    await sincronizarMirrorPublico(email, [], ramas);
+  };
+  window.aprobarComoAdmin = async (email) => {
+    await window.hacerAdmin(email);
+    await updateDoc(doc(db, "autorizados", email), { autorizado: true });
   };
   window.revocarAcceso = async (email) => {
     const actual = autorizadosCache.find(a => a.email === email);
     await updateDoc(doc(db, "autorizados", email), { autorizado: false });
-    if (actual && actual.rama) await sincronizarMirrorPublico(email, actual.rama, null);
+    const ramasViejas = ramasDe(actual);
+    if (ramasViejas.length) await sincronizarMirrorPublico(email, ramasViejas, []);
   };
-  window.otorgarAccesoDirecto = async (email, rama) => {
+  window.otorgarAccesoDirecto = async (email, ramas) => {
     email = email.toLowerCase();
-    await setDoc(doc(db, "autorizados", email), { autorizado: true, rama: rama || null, agregadoPor: sesionEmail, fecha: Date.now() }, { merge: true });
-    await sincronizarMirrorPublico(email, null, rama);
+    await setDoc(doc(db, "autorizados", email), { autorizado: true, ramas, agregadoPor: sesionEmail, fecha: Date.now() }, { merge: true });
+    await sincronizarMirrorPublico(email, [], ramas);
   };
-  window.cambiarRamaAutorizado = async (email, ramaNueva) => {
+  window.otorgarAccesoDirectoAdmin = async (email, ramas) => {
+    await window.otorgarAccesoDirecto(email, ramas);
+    await window.hacerAdmin(email.toLowerCase());
+  };
+  window.guardarRamasAutorizado = async (email, ramasNuevas) => {
     const actual = autorizadosCache.find(a => a.email === email);
-    const ramaVieja = actual ? actual.rama : null;
-    await updateDoc(doc(db, "autorizados", email), { rama: ramaNueva || null });
-    await sincronizarMirrorPublico(email, ramaVieja, ramaNueva);
+    const ramasViejas = ramasDe(actual);
+    await updateDoc(doc(db, "autorizados", email), { ramas: ramasNuevas });
+    await sincronizarMirrorPublico(email, ramasViejas, ramasNuevas);
   };
   window.hacerAdmin = async (email) => { await setDoc(doc(db, "administradores", email), { agregadoPor: sesionEmail, fecha: Date.now() }); };
   window.quitarAdmin = async (email) => { await deleteDoc(doc(db, "administradores", email)); };
+
 
   // ============ ALERTA DE PROMESA POR MAIL ============
   window.marcarPromesa = async (jovenId) => {
@@ -772,8 +784,19 @@
 
   // ============ PERMISOS: panel de administración ============
   const RAMAS_INTRANET = ['Castores','Manada','Scouts','Caminantes','Rovers'];
-  function selectRamaHTML(id, valorActual) {
-    return `<select id="${id}"><option value="">— Sin rama —</option>${RAMAS_INTRANET.map(r => `<option value="${r}" ${valorActual===r?'selected':''}>${r}</option>`).join('')}</select>`;
+  function checkboxRamasHTML(idPrefix, ramasActuales) {
+    ramasActuales = ramasActuales || [];
+    const todas = RAMAS_INTRANET.every(r => ramasActuales.includes(r));
+    return `<div class="ramas-check-group">
+      <label class="rama-check-item todas"><input type="checkbox" id="${idPrefix}-todas" ${todas?'checked':''} onchange="toggleTodasRamas('${idPrefix}', this.checked)"> Todas</label>
+      ${RAMAS_INTRANET.map(r => `<label class="rama-check-item"><input type="checkbox" id="${idPrefix}-${r}" ${ramasActuales.includes(r)?'checked':''}> ${r}</label>`).join('')}
+    </div>`;
+  }
+  window.toggleTodasRamas = (idPrefix, checked) => {
+    RAMAS_INTRANET.forEach(r => { const el = document.getElementById(`${idPrefix}-${r}`); if (el) el.checked = checked; });
+  };
+  function leerRamasSeleccionadas(idPrefix) {
+    return RAMAS_INTRANET.filter(r => document.getElementById(`${idPrefix}-${r}`)?.checked);
   }
   window.renderPermisosPanel = () => {
     const cont = document.getElementById('permisos-app');
@@ -787,33 +810,40 @@
     const admins = [...ADMINS_FIJOS.map(e => ({ email: e, fijo: true })), ...administradoresCache.filter(a => !ADMINS_FIJOS.includes(a.email))];
     cont.innerHTML = `
       <div class="card">
-        <div class="card-header"><div class="icon icon-azul">🔐</div><h2>Permisos de acceso y rama de cada dirigente</h2></div>
+        <div class="card-header"><div class="icon icon-azul">🔐</div><h2>Permisos de acceso y ramas de cada dirigente</h2></div>
         <div class="presentes-wrap">
           <div class="session-bar-intra">Conectado como <b>${escapeHtml(sesionEmail)}</b> <button class="btn-presentes-accion" onclick="logoutIntranetGoogle()">Cerrar sesión</button></div>
 
           <h4 style="margin-top:16px; font-size:13px; color:var(--azul-med);">Agregar dirigente a mano (acceso directo, sin que pida permiso)</h4>
-          <div class="form-row" style="margin-top:8px;">
-            <input id="nuevo-permiso-email" placeholder="email@gmail.com">
-            ${selectRamaHTML('nuevo-permiso-rama')}
-            <button class="btn-presentes-accion" onclick="confirmarNuevoPermiso()">+ Dar acceso</button>
+          <input id="nuevo-permiso-email" placeholder="email@gmail.com" style="margin-top:8px;">
+          ${checkboxRamasHTML('nuevo-permiso')}
+          <div class="form-row">
+            <button class="btn-presentes-accion" onclick="confirmarNuevoPermiso(false)">+ Dar acceso como dirigente</button>
+            <button class="btn-presentes-accion" style="background:var(--rojo)" onclick="confirmarNuevoPermiso(true)">+ Dar acceso como admin</button>
           </div>
 
           ${pendientes.length > 0 ? `
           <h4 style="margin-top:18px; font-size:13px; color:var(--dorado);">⏳ Solicitudes pendientes de aprobación</h4>
           ${pendientes.map(p => `
-            <div class="permiso-row">
+            <div class="pendiente-block">
               <span>${escapeHtml(p.email)} ${p.nombre ? `<em>(${escapeHtml(p.nombre)})</em>` : ''}</span>
-              <span>${selectRamaHTML('rama-pend-'+p.email, p.rama)} <button class="btn-presentes-accion" onclick="aprobarAcceso('${p.email}', document.getElementById('rama-pend-${p.email}').value)">✅ Aprobar</button></span>
+              ${checkboxRamasHTML('rama-pend-'+p.email, ramasDe(p))}
+              <div class="form-row">
+                <button class="btn-presentes-accion" onclick="aprobarAcceso('${p.email}', leerRamasSeleccionadas('rama-pend-${p.email}'))">✅ Aprobar como dirigente</button>
+                <button class="btn-presentes-accion" style="background:var(--rojo)" onclick="aprobarComoAdmin('${p.email}')">👑 Aprobar como admin</button>
+              </div>
             </div>`).join('')}` : ''}
 
           <h4 style="margin-top:18px; font-size:13px; color:var(--azul-med);">Dirigentes con acceso aprobado</h4>
           ${aprobados.length === 0 ? '<p class="jefe-rama-vacio">Nadie aprobado todavía.</p>' : aprobados.map(p => `
-            <div class="permiso-row">
+            <div class="pendiente-block">
               <span>${escapeHtml(p.email)}</span>
-              <span>${selectRamaHTML('rama-ap-'+p.email, p.rama)}
-                <button class="btn-presentes-accion" onclick="cambiarRamaAutorizado('${p.email}', document.getElementById('rama-ap-${p.email}').value)">Guardar rama</button>
-                <button class="btn-presentes-accion" style="background:var(--rojo)" onclick="revocarAcceso('${p.email}')">Revocar</button>
-              </span>
+              ${checkboxRamasHTML('rama-ap-'+p.email, ramasDe(p))}
+              <div class="form-row">
+                <button class="btn-presentes-accion" onclick="guardarRamasAutorizado('${p.email}', leerRamasSeleccionadas('rama-ap-${p.email}'))">Guardar ramas</button>
+                <button class="btn-presentes-accion" style="background:var(--rojo)" onclick="hacerAdmin('${p.email}')">👑 Hacer admin</button>
+                <button class="btn-presentes-accion" style="background:#aaa" onclick="revocarAcceso('${p.email}')">Revocar</button>
+              </div>
             </div>`).join('')}
 
           <h4 style="margin-top:18px; font-size:13px; color:var(--rojo);">Administradores</h4>
@@ -829,11 +859,12 @@
         </div>
       </div>`;
   };
-  window.confirmarNuevoPermiso = async () => {
+  window.confirmarNuevoPermiso = async (comoAdmin) => {
     const email = document.getElementById('nuevo-permiso-email').value.trim();
-    const rama = document.getElementById('nuevo-permiso-rama').value;
+    const ramas = leerRamasSeleccionadas('nuevo-permiso');
     if (!email || !email.includes('@')) { alert('Ingresá un email válido'); return; }
-    await window.otorgarAccesoDirecto(email, rama);
+    if (comoAdmin) await window.otorgarAccesoDirectoAdmin(email, ramas);
+    else await window.otorgarAccesoDirecto(email, ramas);
     document.getElementById('nuevo-permiso-email').value = '';
   };
   window.confirmarNuevoAdmin = async () => {
@@ -1331,6 +1362,12 @@
   .jefe-chip { background: var(--fondo-cl); border: 1px solid var(--crema); border-radius: 20px; padding: 4px 6px 4px 12px; font-size: 12px; display: flex; align-items: center; gap: 6px; }
   .jefe-chip button { background: none; border: none; color: var(--rojo); cursor: pointer; font-weight: 700; }
   .jefe-rama-vacio { font-size: 12px; color: var(--text-sec); font-style: italic; }
+  .ramas-check-group { display: flex; flex-wrap: wrap; gap: 10px; margin: 8px 0; background: white; border: 1px solid var(--crema); border-radius: 8px; padding: 10px 12px; }
+  .rama-check-item { display: flex; align-items: center; gap: 5px; font-size: 12.5px; cursor: pointer; }
+  .rama-check-item.todas { font-weight: 700; color: var(--azul); border-right: 1px solid var(--crema); padding-right: 10px; }
+  .rama-check-item input { width: 15px; height: 15px; accent-color: var(--azul-med); }
+  .pendiente-block { background: var(--fondo-cl); border: 1px solid var(--crema); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
+  .pendiente-block > span { font-size: 13px; font-weight: 600; }
 
   /* ---- PROGRAMA MENSUAL ---- */
   .programa-toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
