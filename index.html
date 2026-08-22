@@ -1356,7 +1356,11 @@
   function renderPerfilChip() {
     const wrap = document.getElementById('perfil-chip-wrap');
     if (!wrap) return;
-    if (sesionEstado === 'anon') { wrap.innerHTML = ''; const old = document.getElementById('perfil-dropdown'); if (old) old.remove(); return; }
+    if (sesionEstado === 'anon') {
+      wrap.innerHTML = `<button class="perfil-login-btn" onclick="loginIntranetGoogle()">Iniciar sesión</button>`;
+      const old = document.getElementById('perfil-dropdown'); if (old) old.remove();
+      return;
+    }
     const inicial = (sesionEmail || '?').charAt(0).toUpperCase();
     wrap.innerHTML = `<div class="perfil-chip" onclick="togglePerfilDropdown(event)"><span class="perfil-chip-avatar">${inicial}</span></div>`;
     // El desplegable se agrega afuera del <header> (que tiene overflow:hidden para la franja de fondo)
@@ -2071,6 +2075,11 @@
 
   /* Chip de perfil (header) */
   .perfil-chip { position: relative; margin-left: 12px; cursor: pointer; }
+  .perfil-login-btn {
+    margin-left: 12px; background: var(--amarillo); color: var(--azul); border: none;
+    border-radius: 20px; padding: 8px 16px; font-size: 12.5px; font-weight: 700; cursor: pointer;
+    font-family: 'Source Sans 3', sans-serif; white-space: nowrap;
+  }
   .perfil-chip-avatar {
     width: 34px; height: 34px; border-radius: 50%; background: var(--amarillo); color: var(--azul);
     display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 15px;
