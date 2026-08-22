@@ -60,6 +60,7 @@
   const scoutAuth = getAuth(scoutApp);
   const scoutDb = getFirestore(scoutApp);
   let scoutSesionOk = false;
+  onAuthStateChanged(scoutAuth, (user) => { scoutSesionOk = !!user; });
 
   const ETAPAS_POR_RAMA_SCOUT = {
     Castores:   ["Ambientación","Recolectores","Constructores"],
