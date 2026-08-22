@@ -60,6 +60,7 @@
   const scoutAuth = getAuth(scoutApp);
   const scoutDb = getFirestore(scoutApp);
   let scoutSesionOk = false;
+  window._scoutSesionOk = () => scoutSesionOk;
   onAuthStateChanged(scoutAuth, (user) => { scoutSesionOk = !!user; });
 
   const ETAPAS_POR_RAMA_SCOUT = {
@@ -162,6 +163,50 @@
         creadoEn: serverTimestamp(), actualizadoEn: serverTimestamp()
       });
       return ref.id;
+    }
+  };
+
+  // Crea (o actualiza) la autorización del chico en scout-pringles, para que su perfil
+  // se genere solo la primera vez que entre al Portal de Jóvenes con su cuenta de Google.
+  window.preautorizarEnPortalJovenes = async (email, nombre, rama) => {
+    if (!scoutSesionOk) return { ok: false, motivo: 'sin-sesion-portal' };
+    try {
+      const emailKey = email.replace(/\./g, "_");
+      await setDoc(doc(scoutDb, "autorizados", emailKey), {
+        email, nombre, rol: rama, aprobadoEn: serverTimestamp()
+      }, { merge: true });
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, motivo: err.message };
+    }
+  };
+
+  // Para jóvenes SIN email todavía: los empuja igual al Portal como un perfil "pendiente"
+  // (con su nombre, rama y desarrollo en 0%), para que los dirigentes ya puedan verlos y
+  // cargarles progreso. Cuando más adelante se le agregue el email, se le habilita el
+  // login real (ver preautorizarEnPortalJovenes) — el perfil pendiente queda igual con lo
+  // ya cargado, disponible para vincularlo a mano si hace falta.
+  window.crearPerfilPendienteEnPortal = async (jovenIntranetId, nombre, rama) => {
+    if (!scoutSesionOk) return { ok: false, motivo: 'sin-sesion-portal' };
+    try {
+      const perfilId = 'pendiente_' + jovenIntranetId;
+      const ref = doc(scoutDb, "perfiles", perfilId);
+      const snap = await getDoc(ref);
+      if (snap.exists()) {
+        // Ya existe: solo actualizamos nombre/rama por si cambiaron, sin pisar el desarrollo cargado.
+        await updateDoc(ref, { nombre, rol: rama });
+      } else {
+        await setDoc(ref, {
+          nombre, email: '', rol: rama, ramaAsignada: '', fotoPerfil: '',
+          desarrollo: { porRama: { [rama]: { promesa: 0, etapas: {}, especialidades: [] } }, notas: [] },
+          edad: '', isAdmin: false,
+          pendienteVinculacion: true, intranetJovenId: jovenIntranetId,
+          creadoEn: serverTimestamp()
+        });
+      }
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, motivo: err.message };
     }
   };
 
@@ -2492,7 +2537,7 @@
   // Portal de Jóvenes a los que ya tienen email cargado.
   window.precargarTodosEnPortal = async () => {
     try {
-      if (!scoutSesionOk) { alert('⚠️ Todavía no se pudo conectar con el Portal de Jóvenes. Cerrá sesión (desde el círculo de perfil) y volvé a entrar con Google, e intentá de nuevo.'); return; }
+      if (!window._scoutSesionOk()) { alert('⚠️ Todavía no se pudo conectar con el Portal de Jóvenes. Cerrá sesión (desde el círculo de perfil) y volvé a entrar con Google, e intentá de nuevo.'); return; }
       const todos = window.jovenesCache || [];
       if (todos.length === 0) { alert('No hay jóvenes cargados en esta vista todavía (revisá el filtro de rama de arriba).'); return; }
       const conEmail = todos.filter(j => j.email).length;
@@ -2582,50 +2627,6 @@
     if (!resultado.ok) console.warn('No se pudo sincronizar con el Portal de Jóvenes:', resultado.motivo);
     document.getElementById('form-joven-wrap').innerHTML = '';
   };
-
-  // Crea (o actualiza) la autorización del chico en scout-pringles, para que su perfil
-  // se genere solo la primera vez que entre al Portal de Jóvenes con su cuenta de Google.
-  async function preautorizarEnPortalJovenes(email, nombre, rama) {
-    if (!scoutSesionOk) return { ok: false, motivo: 'sin-sesion-portal' };
-    try {
-      const emailKey = email.replace(/\./g, "_");
-      await setDoc(doc(scoutDb, "autorizados", emailKey), {
-        email, nombre, rol: rama, aprobadoEn: serverTimestamp()
-      }, { merge: true });
-      return { ok: true };
-    } catch (err) {
-      return { ok: false, motivo: err.message };
-    }
-  }
-
-  // Para jóvenes SIN email todavía: los empuja igual al Portal como un perfil "pendiente"
-  // (con su nombre, rama y desarrollo en 0%), para que los dirigentes ya puedan verlos y
-  // cargarles progreso. Cuando más adelante se le agregue el email, se le habilita el
-  // login real (ver preautorizarEnPortalJovenes) — el perfil pendiente queda igual con lo
-  // ya cargado, disponible para vincularlo a mano si hace falta.
-  async function crearPerfilPendienteEnPortal(jovenIntranetId, nombre, rama) {
-    if (!scoutSesionOk) return { ok: false, motivo: 'sin-sesion-portal' };
-    try {
-      const perfilId = 'pendiente_' + jovenIntranetId;
-      const ref = doc(scoutDb, "perfiles", perfilId);
-      const snap = await getDoc(ref);
-      if (snap.exists()) {
-        // Ya existe: solo actualizamos nombre/rama por si cambiaron, sin pisar el desarrollo cargado.
-        await updateDoc(ref, { nombre, rol: rama });
-      } else {
-        await setDoc(ref, {
-          nombre, email: '', rol: rama, ramaAsignada: '', fotoPerfil: '',
-          desarrollo: { porRama: { [rama]: { promesa: 0, etapas: {}, especialidades: [] } }, notas: [] },
-          edad: '', isAdmin: false,
-          pendienteVinculacion: true, intranetJovenId: jovenIntranetId,
-          creadoEn: serverTimestamp()
-        });
-      }
-      return { ok: true };
-    } catch (err) {
-      return { ok: false, motivo: err.message };
-    }
-  }
 
   window.exportarJovenesCSV = () => {
     const filas = [['Nombre','Apellido','Rama','Fecha nacimiento','Edad','Contacto']];
