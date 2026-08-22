@@ -491,18 +491,19 @@
   });
 
   window.loginIntranetGoogle = () => {
-    signInWithPopup(auth, new GoogleAuthProvider()).then(async (result) => {
-      try {
-        const credential = GoogleAuthProvider.credentialFromResult(result);
-        if (!credential) throw new Error('Google no devolvió credencial reutilizable.');
-        await signInWithCredential(scoutAuth, credential);
-        scoutSesionOk = true;
-      } catch (e) {
-        console.error('No se pudo sincronizar la sesión con el Portal de Jóvenes:', e);
-        scoutSesionOk = false;
-        alert('Iniciaste sesión en la Intranet, pero no se pudo conectar con el Portal de Jóvenes (motivo: ' + e.message + '). Las funciones que cruzan datos con ese portal no van a funcionar hasta resolverlo.');
-      }
-    }).catch(e => alert('No se pudo iniciar sesión: ' + e.message));
+    signInWithPopup(auth, new GoogleAuthProvider()).catch(e => alert('No se pudo iniciar sesión: ' + e.message));
+  };
+  // Conexión aparte con el Portal de Jóvenes: son dos proyectos de Firebase distintos,
+  // así que hace falta un segundo inicio de sesión (mismo Gmail, un toque más).
+  window.conectarConPortalJovenes = async () => {
+    try {
+      await signInWithPopup(scoutAuth, new GoogleAuthProvider());
+      scoutSesionOk = true;
+      alert('✅ Conectado con el Portal de Jóvenes.');
+      if (window.renderJovenesLista) window.renderJovenesLista();
+    } catch (e) {
+      alert('No se pudo conectar con el Portal de Jóvenes: ' + e.message);
+    }
   };
   window.logoutIntranetGoogle = () => { signOut(scoutAuth).catch(() => {}); return signOut(auth); };
 
@@ -2404,6 +2405,7 @@
             <button class="btn-presentes-accion" onclick="document.getElementById('excel-input').click()">📤 Importar Excel</button>
             <button class="btn-presentes-accion" onclick="exportarJovenesCSV()">⬇️ Descargar CSV</button>
             <button class="btn-presentes-accion" style="background:var(--rojo)" onclick="precargarTodosEnPortal()">🧒 Precargar todos en el Portal</button>
+            <button class="btn-presentes-accion" style="background:#555" onclick="conectarConPortalJovenes()">🔗 Conectar Portal de Jóvenes</button>
             <input type="file" id="excel-input" accept=".xlsx,.xls" style="display:none" onchange="importarExcel(event)">
           </div>
           <div id="import-preview-wrap"></div>
@@ -2537,7 +2539,11 @@
   // Portal de Jóvenes a los que ya tienen email cargado.
   window.precargarTodosEnPortal = async () => {
     try {
-      if (!window._scoutSesionOk()) { alert('⚠️ Todavía no se pudo conectar con el Portal de Jóvenes. Cerrá sesión (desde el círculo de perfil) y volvé a entrar con Google, e intentá de nuevo.'); return; }
+      if (!window._scoutSesionOk()) {
+        if (!confirm('Para esto hace falta conectar también el Portal de Jóvenes (un segundo inicio de sesión con tu misma cuenta de Google). ¿Conectar ahora?')) return;
+        await window.conectarConPortalJovenes();
+        if (!window._scoutSesionOk()) return;
+      }
       const todos = window.jovenesCache || [];
       if (todos.length === 0) { alert('No hay jóvenes cargados en esta vista todavía (revisá el filtro de rama de arriba).'); return; }
       const conEmail = todos.filter(j => j.email).length;
@@ -2620,11 +2626,18 @@
     const ramaFinal = datos.rama || ramaAnterior;
 
     // Lo empujamos al Portal de Jóvenes: con acceso real si tiene email, o como perfil pendiente si no.
-    const nombreCompleto = `${datos.nombre} ${datos.apellido}`;
-    const resultado = datos.email
-      ? await preautorizarEnPortalJovenes(datos.email, nombreCompleto, ramaFinal)
-      : await crearPerfilPendienteEnPortal(jovenId, nombreCompleto, ramaFinal);
-    if (!resultado.ok) console.warn('No se pudo sincronizar con el Portal de Jóvenes:', resultado.motivo);
+    if (!window._scoutSesionOk()) {
+      if (confirm('Joven guardado en la Intranet. Para sincronizarlo también con el Portal de Jóvenes hace falta conectar ese portal (un segundo inicio de sesión con tu misma cuenta). ¿Conectar ahora?')) {
+        await window.conectarConPortalJovenes();
+      }
+    }
+    if (window._scoutSesionOk()) {
+      const nombreCompleto = `${datos.nombre} ${datos.apellido}`;
+      const resultado = datos.email
+        ? await window.preautorizarEnPortalJovenes(datos.email, nombreCompleto, ramaFinal)
+        : await window.crearPerfilPendienteEnPortal(jovenId, nombreCompleto, ramaFinal);
+      if (!resultado.ok) console.warn('No se pudo sincronizar con el Portal de Jóvenes:', resultado.motivo);
+    }
     document.getElementById('form-joven-wrap').innerHTML = '';
   };
 
