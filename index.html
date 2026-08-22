@@ -449,8 +449,14 @@
     signInWithPopup(auth, new GoogleAuthProvider()).then(async (result) => {
       try {
         const credential = GoogleAuthProvider.credentialFromResult(result);
-        if (credential) { await signInWithCredential(scoutAuth, credential); scoutSesionOk = true; }
-      } catch (e) { console.error('No se pudo sincronizar la sesión con el Portal de Jóvenes:', e); scoutSesionOk = false; }
+        if (!credential) throw new Error('Google no devolvió credencial reutilizable.');
+        await signInWithCredential(scoutAuth, credential);
+        scoutSesionOk = true;
+      } catch (e) {
+        console.error('No se pudo sincronizar la sesión con el Portal de Jóvenes:', e);
+        scoutSesionOk = false;
+        alert('Iniciaste sesión en la Intranet, pero no se pudo conectar con el Portal de Jóvenes (motivo: ' + e.message + '). Las funciones que cruzan datos con ese portal no van a funcionar hasta resolverlo.');
+      }
     }).catch(e => alert('No se pudo iniciar sesión: ' + e.message));
   };
   window.logoutIntranetGoogle = () => { signOut(scoutAuth).catch(() => {}); return signOut(auth); };
@@ -2485,23 +2491,28 @@
   // Recorre a TODOS los jóvenes ya cargados (no solo los nuevos) y pre-autoriza en el
   // Portal de Jóvenes a los que ya tienen email cargado.
   window.precargarTodosEnPortal = async () => {
-    if (!scoutSesionOk) { alert('Todavía no se pudo conectar con el Portal de Jóvenes. Cerrá sesión y volvé a entrar con Google, e intentá de nuevo.'); return; }
-    const todos = window.jovenesCache;
-    if (todos.length === 0) { alert('No hay jóvenes cargados todavía.'); return; }
-    const conEmail = todos.filter(j => j.email).length;
-    const sinEmail = todos.length - conEmail;
-    if (!confirm(`Se va a precargar en el Portal de Jóvenes a los ${todos.length} joven(es) cargados: ${conEmail} con acceso real (ya tienen email) y ${sinEmail} como perfil pendiente (sin login todavía, hasta que le agregues el mail). ¿Continuar?`)) return;
+    try {
+      if (!scoutSesionOk) { alert('⚠️ Todavía no se pudo conectar con el Portal de Jóvenes. Cerrá sesión (desde el círculo de perfil) y volvé a entrar con Google, e intentá de nuevo.'); return; }
+      const todos = window.jovenesCache || [];
+      if (todos.length === 0) { alert('No hay jóvenes cargados en esta vista todavía (revisá el filtro de rama de arriba).'); return; }
+      const conEmail = todos.filter(j => j.email).length;
+      const sinEmail = todos.length - conEmail;
+      if (!confirm(`Se va a precargar en el Portal de Jóvenes a los ${todos.length} joven(es) de esta lista: ${conEmail} con acceso real (ya tienen email) y ${sinEmail} como perfil pendiente (sin login todavía, hasta que le agregues el mail). ¿Continuar?`)) return;
 
-    let okConAcceso = 0, okPendiente = 0, error = 0;
-    for (const j of todos) {
-      const nombreCompleto = `${j.nombre} ${j.apellido}`;
-      const resultado = j.email
-        ? await preautorizarEnPortalJovenes(j.email, nombreCompleto, j.rama)
-        : await crearPerfilPendienteEnPortal(j.id, nombreCompleto, j.rama);
-      if (resultado.ok) { if (j.email) okConAcceso++; else okPendiente++; }
-      else error++;
+      let okConAcceso = 0, okPendiente = 0, error = 0;
+      for (const j of todos) {
+        const nombreCompleto = `${j.nombre} ${j.apellido}`;
+        const resultado = j.email
+          ? await preautorizarEnPortalJovenes(j.email, nombreCompleto, j.rama)
+          : await crearPerfilPendienteEnPortal(j.id, nombreCompleto, j.rama);
+        if (resultado.ok) { if (j.email) okConAcceso++; else okPendiente++; }
+        else error++;
+      }
+      alert(`✅ Listo. ${okConAcceso} con acceso real y ${okPendiente} como perfil pendiente en el Portal de Jóvenes.${error ? ` ${error} fallaron.` : ''}`);
+    } catch (err) {
+      console.error('Error en precargarTodosEnPortal:', err);
+      alert('⚠️ Ocurrió un error inesperado: ' + err.message);
     }
-    alert(`✅ Listo. ${okConAcceso} con acceso real y ${okPendiente} como perfil pendiente en el Portal de Jóvenes.${error ? ` ${error} fallaron (revisá la consola).` : ''}`);
   };
 
   window.renderCumplesProximos = () => {
