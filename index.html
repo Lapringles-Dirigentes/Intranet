@@ -1921,6 +1921,7 @@
     background: white; border: 1px solid var(--azul-cl); border-radius: 6px;
     padding: 5px 9px; font-size: 11px; cursor: pointer;
   }
+  .sin-email-tag { color: #e65100; font-weight: 700; font-size: 11px; }
   .cumple-banner {
     background: var(--amarillo-cl); border-left: 3px solid var(--amarillo);
     border-radius: 8px; padding: 10px 14px; margin-bottom: 14px; font-size: 12px;
@@ -2340,6 +2341,7 @@
             <button class="btn-presentes-accion" onclick="abrirFormJoven()">➕ Agregar joven</button>
             <button class="btn-presentes-accion" onclick="document.getElementById('excel-input').click()">📤 Importar Excel</button>
             <button class="btn-presentes-accion" onclick="exportarJovenesCSV()">⬇️ Descargar CSV</button>
+            <button class="btn-presentes-accion" style="background:var(--rojo)" onclick="precargarTodosEnPortal()">🧒 Precargar todos en el Portal</button>
             <input type="file" id="excel-input" accept=".xlsx,.xls" style="display:none" onchange="importarExcel(event)">
           </div>
           <div id="import-preview-wrap"></div>
@@ -2460,12 +2462,30 @@
         <div class="info">
           <strong>${j.nombre} ${j.apellido}</strong>
           <span>${j.rama} · ${window.calcularEdad(j.fechaNacimiento) ?? "—"} años · nació ${j.fechaNacimiento || "—"}</span>
+          <span>${j.email ? `📱 ${escapeHtml(j.email)}` : '<span class="sin-email-tag">⚠️ Sin email — no tiene cuenta en el Portal</span>'}</span>
         </div>
         <div class="joven-card-acciones">
           <button onclick='abrirFormJoven(${JSON.stringify(j).replace(/'/g,"&apos;")})'>✏️ Editar</button>
           <button onclick="darDeBajaJoven('${j.id}')" style="color:#b01a1a">🗑️ Baja</button>
         </div>
       </div>`).join('');
+  };
+
+  // Recorre a TODOS los jóvenes ya cargados (no solo los nuevos) y pre-autoriza en el
+  // Portal de Jóvenes a los que ya tienen email cargado.
+  window.precargarTodosEnPortal = async () => {
+    if (!scoutSesionOk) { alert('Todavía no se pudo conectar con el Portal de Jóvenes. Cerrá sesión y volvé a entrar con Google, e intentá de nuevo.'); return; }
+    const conEmail = window.jovenesCache.filter(j => j.email);
+    const sinEmail = window.jovenesCache.length - conEmail.length;
+    if (conEmail.length === 0) { alert('Ningún joven cargado tiene email todavía. Agregalo editando su ficha.'); return; }
+    if (!confirm(`Se va a precargar la cuenta de ${conEmail.length} joven(es) con email en el Portal de Jóvenes.${sinEmail ? ` Hay ${sinEmail} sin email, que van a quedar sin precargar hasta que se lo agregues.` : ''} ¿Continuar?`)) return;
+
+    let ok = 0, error = 0;
+    for (const j of conEmail) {
+      const resultado = await preautorizarEnPortalJovenes(j.email, `${j.nombre} ${j.apellido}`, j.rama);
+      if (resultado.ok) ok++; else error++;
+    }
+    alert(`✅ Listo. ${ok} cuenta(s) precargada(s) en el Portal de Jóvenes.${error ? ` ${error} fallaron (revisá la consola).` : ''}${sinEmail ? ` Quedan ${sinEmail} joven(es) sin email para agregar.` : ''}`);
   };
 
   window.renderCumplesProximos = () => {
