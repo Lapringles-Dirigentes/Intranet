@@ -383,6 +383,9 @@
       return;
     }
     const email = user.email.toLowerCase();
+    // El nombre para Tareas/Presentes/Muro de Ideas se toma solo de la cuenta de Google logueada.
+    localStorage.setItem('dirigente_nombre', user.displayName || email);
+    actualizarEstadoDirigente();
     const acceso = await verificarAccesoIntranet(email);
 
     if (acceso.estado === 'none') {
@@ -486,15 +489,15 @@
       alert('✅ Acceso admin otorgado a ' + email + '.');
     } catch (err) { console.error(err); alert('⚠️ No se pudo dar el acceso admin: ' + err.message); }
   };
-  window.guardarRamasAutorizado = async (email, ramasNuevas, esJefeNuevo) => {
+  window.guardarRamasAutorizado = async (email, ramasNuevas) => {
     try {
       const actual = autorizadosCache.find(a => a.email === email);
       const ramasViejas = ramasDe(actual);
-      const esJefeViejo = actual ? !!actual.esJefe : false;
-      await setDoc(doc(db, "autorizados", email), { ramas: ramasNuevas, esJefe: !!esJefeNuevo }, { merge: true });
-      await sincronizarMirrorPublico(email, esJefeViejo ? ramasViejas : [], esJefeNuevo ? ramasNuevas : []);
+      const esJefeActual = actual ? !!actual.esJefe : false;
+      await setDoc(doc(db, "autorizados", email), { ramas: ramasNuevas }, { merge: true });
+      if (esJefeActual) await sincronizarMirrorPublico(email, ramasViejas, ramasNuevas);
       window.renderPermisosPanel();
-      alert('✅ Cambios guardados para ' + email + '.');
+      alert('✅ Ramas guardadas para ' + email + '.');
     } catch (err) { console.error(err); alert('⚠️ No se pudieron guardar los cambios: ' + err.message); }
   };
   window.hacerAdmin = async (email, silencioso) => {
@@ -964,14 +967,15 @@
 
   // ============ PERMISOS: panel de administración ============
   const RAMAS_INTRANET = ['Castores','Manada','Scouts','Caminantes','Rovers'];
-  function checkboxRamasHTML(idPrefix, ramasActuales, esJefeActual) {
+  function checkboxRamasHTML(idPrefix, ramasActuales, esJefeActual, emailInstantSave) {
     ramasActuales = ramasActuales || [];
     const todas = RAMAS_INTRANET.every(r => ramasActuales.includes(r));
+    const onchangeEsJefe = emailInstantSave ? `onchange="toggleEsJefeInstant('${emailInstantSave}', this.checked)"` : '';
     return `<div class="ramas-check-group">
       <label class="rama-check-item todas"><input type="checkbox" id="${idPrefix}-todas" ${todas?'checked':''} onchange="toggleTodasRamas('${idPrefix}', this.checked)"> Todas</label>
       ${RAMAS_INTRANET.map(r => `<label class="rama-check-item"><input type="checkbox" id="${idPrefix}-${r}" ${ramasActuales.includes(r)?'checked':''}> ${r}</label>`).join('')}
     </div>
-    <label class="rama-check-item esjefe-check"><input type="checkbox" id="${idPrefix}-esjefe" ${esJefeActual?'checked':''}> 👑 Es jefe/a de rama (recibe alertas de promesa de sus ramas)</label>`;
+    <label class="rama-check-item esjefe-check"><input type="checkbox" id="${idPrefix}-esjefe" ${esJefeActual?'checked':''} ${onchangeEsJefe}> 👑 Es jefe/a de rama (recibe alertas de promesa de sus ramas)${emailInstantSave ? ' — se guarda solo al tildar' : ''}</label>`;
   }
   window.toggleTodasRamas = (idPrefix, checked) => {
     RAMAS_INTRANET.forEach(r => { const el = document.getElementById(`${idPrefix}-${r}`); if (el) el.checked = checked; });
@@ -982,6 +986,17 @@
   function leerEsJefe(idPrefix) {
     return !!document.getElementById(`${idPrefix}-esjefe`)?.checked;
   }
+  window.toggleEsJefeInstant = async (email, checked) => {
+    try {
+      const actual = autorizadosCache.find(a => a.email === email);
+      const ramasActuales = ramasDe(actual);
+      const ramasAntes = actual && actual.esJefe ? ramasActuales : [];
+      const ramasDespues = checked ? ramasActuales : [];
+      await setDoc(doc(db, "autorizados", email), { esJefe: !!checked }, { merge: true });
+      await sincronizarMirrorPublico(email, ramasAntes, ramasDespues);
+      window.renderPermisosPanel();
+    } catch (err) { console.error(err); alert('⚠️ No se pudo guardar "Es jefe de rama": ' + err.message); }
+  };
   window.renderPermisosPanel = () => {
     const cont = document.getElementById('permisos-app');
     if (!cont || sesionEstado !== 'ok') return;
@@ -1023,9 +1038,9 @@
           ${aprobados.length === 0 ? '<p class="jefe-rama-vacio">Nadie aprobado todavía.</p>' : aprobados.map(p => `
             <div class="pendiente-block">
               <span>${escapeHtml(p.email)} ${p.esJefe ? '<span class="jefe-badge">👑 Jefe/a de rama</span>' : ''}</span>
-              ${checkboxRamasHTML('rama-ap-'+p.email, ramasDe(p), p.esJefe)}
+              ${checkboxRamasHTML('rama-ap-'+p.email, ramasDe(p), p.esJefe, p.email)}
               <div class="form-row">
-                <button class="btn-presentes-accion" onclick="guardarRamasAutorizado('${p.email}', leerRamasSeleccionadas('rama-ap-${p.email}'), leerEsJefe('rama-ap-${p.email}'))">Guardar</button>
+                <button class="btn-presentes-accion" onclick="guardarRamasAutorizado('${p.email}', leerRamasSeleccionadas('rama-ap-${p.email}'))">Guardar ramas</button>
                 <button class="btn-presentes-accion" style="background:var(--rojo)" onclick="hacerAdmin('${p.email}')">👑 Hacer admin</button>
                 <button class="btn-presentes-accion" style="background:#aaa" onclick="eliminarAutorizado('${p.email}')">🗑️ Eliminar acceso</button>
               </div>
