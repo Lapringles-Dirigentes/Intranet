@@ -155,11 +155,13 @@
   window.guardarJoven = async (id, datos) => {
     if (id) {
       await updateDoc(doc(db, "jovenes", id), { ...datos, actualizadoEn: serverTimestamp() });
+      return id;
     } else {
-      await addDoc(collection(db, "jovenes"), {
+      const ref = await addDoc(collection(db, "jovenes"), {
         ...datos, activo: true, historialRamas: [{ rama: datos.rama, desde: new Date().toISOString().slice(0,10), hasta: null }],
         creadoEn: serverTimestamp(), actualizadoEn: serverTimestamp()
       });
+      return ref.id;
     }
   };
 
@@ -1354,17 +1356,17 @@
   function renderPerfilChip() {
     const wrap = document.getElementById('perfil-chip-wrap');
     if (!wrap) return;
-    if (sesionEstado === 'anon') { wrap.innerHTML = ''; return; }
+    if (sesionEstado === 'anon') { wrap.innerHTML = ''; const old = document.getElementById('perfil-dropdown'); if (old) old.remove(); return; }
     const inicial = (sesionEmail || '?').charAt(0).toUpperCase();
-    wrap.innerHTML = `
-      <div class="perfil-chip" onclick="togglePerfilDropdown(event)">
-        <span class="perfil-chip-avatar">${inicial}</span>
-        <div class="perfil-dropdown" id="perfil-dropdown">
-          <div class="perfil-dropdown-email">${escapeHtml(sesionEmail)}</div>
-          <div class="perfil-dropdown-rol">${sesionEsAdmin ? '👑 Administrador' : sesionEstado === 'pending' ? '⏳ Acceso pendiente' : 'Dirigente'}</div>
-          <button class="perfil-dropdown-logout" onclick="logoutIntranetGoogle()">Cerrar sesión</button>
-        </div>
-      </div>`;
+    wrap.innerHTML = `<div class="perfil-chip" onclick="togglePerfilDropdown(event)"><span class="perfil-chip-avatar">${inicial}</span></div>`;
+    // El desplegable se agrega afuera del <header> (que tiene overflow:hidden para la franja de fondo)
+    // para que no quede recortado; se ancla a la ventana con position:fixed.
+    let dd = document.getElementById('perfil-dropdown');
+    if (!dd) { dd = document.createElement('div'); dd.id = 'perfil-dropdown'; dd.className = 'perfil-dropdown'; document.body.appendChild(dd); }
+    dd.innerHTML = `
+      <div class="perfil-dropdown-email">${escapeHtml(sesionEmail)}</div>
+      <div class="perfil-dropdown-rol">${sesionEsAdmin ? '👑 Administrador' : sesionEstado === 'pending' ? '⏳ Acceso pendiente' : 'Dirigente'}</div>
+      <button class="perfil-dropdown-logout" onclick="logoutIntranetGoogle()">Cerrar sesión</button>`;
   }
   window.togglePerfilDropdown = (ev) => {
     ev.stopPropagation();
@@ -2075,8 +2077,8 @@
     border: 2px solid rgba(255,255,255,0.5);
   }
   .perfil-dropdown {
-    display: none; position: absolute; top: 44px; right: 0; background: white; color: var(--text);
-    border-radius: 10px; box-shadow: var(--shadow); padding: 12px 14px; min-width: 200px; z-index: 200;
+    display: none; position: fixed; top: 60px; right: 14px; background: white; color: var(--text);
+    border-radius: 10px; box-shadow: var(--shadow); padding: 12px 14px; min-width: 200px; z-index: 300;
   }
   .perfil-dropdown.show { display: block; }
   .perfil-dropdown-email { font-size: 12.5px; font-weight: 700; word-break: break-all; }
@@ -2475,17 +2477,22 @@
   // Portal de Jóvenes a los que ya tienen email cargado.
   window.precargarTodosEnPortal = async () => {
     if (!scoutSesionOk) { alert('Todavía no se pudo conectar con el Portal de Jóvenes. Cerrá sesión y volvé a entrar con Google, e intentá de nuevo.'); return; }
-    const conEmail = window.jovenesCache.filter(j => j.email);
-    const sinEmail = window.jovenesCache.length - conEmail.length;
-    if (conEmail.length === 0) { alert('Ningún joven cargado tiene email todavía. Agregalo editando su ficha.'); return; }
-    if (!confirm(`Se va a precargar la cuenta de ${conEmail.length} joven(es) con email en el Portal de Jóvenes.${sinEmail ? ` Hay ${sinEmail} sin email, que van a quedar sin precargar hasta que se lo agregues.` : ''} ¿Continuar?`)) return;
+    const todos = window.jovenesCache;
+    if (todos.length === 0) { alert('No hay jóvenes cargados todavía.'); return; }
+    const conEmail = todos.filter(j => j.email).length;
+    const sinEmail = todos.length - conEmail;
+    if (!confirm(`Se va a precargar en el Portal de Jóvenes a los ${todos.length} joven(es) cargados: ${conEmail} con acceso real (ya tienen email) y ${sinEmail} como perfil pendiente (sin login todavía, hasta que le agregues el mail). ¿Continuar?`)) return;
 
-    let ok = 0, error = 0;
-    for (const j of conEmail) {
-      const resultado = await preautorizarEnPortalJovenes(j.email, `${j.nombre} ${j.apellido}`, j.rama);
-      if (resultado.ok) ok++; else error++;
+    let okConAcceso = 0, okPendiente = 0, error = 0;
+    for (const j of todos) {
+      const nombreCompleto = `${j.nombre} ${j.apellido}`;
+      const resultado = j.email
+        ? await preautorizarEnPortalJovenes(j.email, nombreCompleto, j.rama)
+        : await crearPerfilPendienteEnPortal(j.id, nombreCompleto, j.rama);
+      if (resultado.ok) { if (j.email) okConAcceso++; else okPendiente++; }
+      else error++;
     }
-    alert(`✅ Listo. ${ok} cuenta(s) precargada(s) en el Portal de Jóvenes.${error ? ` ${error} fallaron (revisá la consola).` : ''}${sinEmail ? ` Quedan ${sinEmail} joven(es) sin email para agregar.` : ''}`);
+    alert(`✅ Listo. ${okConAcceso} con acceso real y ${okPendiente} como perfil pendiente en el Portal de Jóvenes.${error ? ` ${error} fallaron (revisá la consola).` : ''}`);
   };
 
   window.renderCumplesProximos = () => {
@@ -2544,13 +2551,15 @@
       await window.cambiarRamaJoven(id, ramaAnterior, datos.rama);
       delete datos.rama;
     }
-    await window.guardarJoven(id || null, datos);
+    const jovenId = await window.guardarJoven(id || null, datos);
+    const ramaFinal = datos.rama || ramaAnterior;
 
-    // Si cargó email, lo pre-autorizamos en el Portal de Jóvenes (proyecto scout-pringles)
-    if (datos.email) {
-      const resultado = await preautorizarEnPortalJovenes(datos.email, `${datos.nombre} ${datos.apellido}`, datos.rama);
-      if (!resultado.ok) console.warn('No se pudo pre-autorizar en el Portal de Jóvenes:', resultado.motivo);
-    }
+    // Lo empujamos al Portal de Jóvenes: con acceso real si tiene email, o como perfil pendiente si no.
+    const nombreCompleto = `${datos.nombre} ${datos.apellido}`;
+    const resultado = datos.email
+      ? await preautorizarEnPortalJovenes(datos.email, nombreCompleto, ramaFinal)
+      : await crearPerfilPendienteEnPortal(jovenId, nombreCompleto, ramaFinal);
+    if (!resultado.ok) console.warn('No se pudo sincronizar con el Portal de Jóvenes:', resultado.motivo);
     document.getElementById('form-joven-wrap').innerHTML = '';
   };
 
@@ -2563,6 +2572,35 @@
       await setDoc(doc(scoutDb, "autorizados", emailKey), {
         email, nombre, rol: rama, aprobadoEn: serverTimestamp()
       }, { merge: true });
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, motivo: err.message };
+    }
+  }
+
+  // Para jóvenes SIN email todavía: los empuja igual al Portal como un perfil "pendiente"
+  // (con su nombre, rama y desarrollo en 0%), para que los dirigentes ya puedan verlos y
+  // cargarles progreso. Cuando más adelante se le agregue el email, se le habilita el
+  // login real (ver preautorizarEnPortalJovenes) — el perfil pendiente queda igual con lo
+  // ya cargado, disponible para vincularlo a mano si hace falta.
+  async function crearPerfilPendienteEnPortal(jovenIntranetId, nombre, rama) {
+    if (!scoutSesionOk) return { ok: false, motivo: 'sin-sesion-portal' };
+    try {
+      const perfilId = 'pendiente_' + jovenIntranetId;
+      const ref = doc(scoutDb, "perfiles", perfilId);
+      const snap = await getDoc(ref);
+      if (snap.exists()) {
+        // Ya existe: solo actualizamos nombre/rama por si cambiaron, sin pisar el desarrollo cargado.
+        await updateDoc(ref, { nombre, rol: rama });
+      } else {
+        await setDoc(ref, {
+          nombre, email: '', rol: rama, ramaAsignada: '', fotoPerfil: '',
+          desarrollo: { porRama: { [rama]: { promesa: 0, etapas: {}, especialidades: [] } }, notas: [] },
+          edad: '', isAdmin: false,
+          pendienteVinculacion: true, intranetJovenId: jovenIntranetId,
+          creadoEn: serverTimestamp()
+        });
+      }
       return { ok: true };
     } catch (err) {
       return { ok: false, motivo: err.message };
