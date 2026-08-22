@@ -27,7 +27,7 @@
     query, orderBy, onSnapshot, serverTimestamp, updateDoc, deleteDoc, getDocs,
     where, writeBatch, arrayUnion, arrayRemove, deleteField }
     from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
-  import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged }
+  import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithCredential, signOut, onAuthStateChanged }
     from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 
   const firebaseConfig = {
@@ -43,6 +43,31 @@
   const app = initializeApp(firebaseConfig);
   const db  = getFirestore(app);
   const auth = getAuth(app);
+
+  // ============ SEGUNDO PROYECTO: Portal de Jóvenes (scout-pringles) ============
+  // Se usa para: 1) crear la autorización del chico cuando se lo carga con email en la Intranet,
+  // 2) reflejar el 100% de una ceremonia (Promesa/Etapa/Especialidad) en su desarrollo.
+  const scoutConfig = {
+    apiKey: "AIzaSyAbNlr9T-q9QHosYX2UMziLQ2Qrl_yrQP8",
+    authDomain: "scout-pringles.firebaseapp.com",
+    projectId: "scout-pringles",
+    storageBucket: "scout-pringles.firebasestorage.app",
+    messagingSenderId: "655976644512",
+    appId: "1:655976644512:web:2666d2483351087b866ec5",
+    measurementId: "G-GEKS5046KG"
+  };
+  const scoutApp = initializeApp(scoutConfig, "portalJovenes");
+  const scoutAuth = getAuth(scoutApp);
+  const scoutDb = getFirestore(scoutApp);
+  let scoutSesionOk = false;
+
+  const ETAPAS_POR_RAMA_SCOUT = {
+    Castores:   ["Ambientación","Recolectores","Constructores"],
+    Manada:     ["Pata Tierna","Saltador","Rastreador","Cazador"],
+    Scouts:     ["Pista","Rumbo","Senda","Travesía"],
+    Caminantes: ["Tierra","Aire","Fuego","Agua"],
+    Rovers:     ["Encuentro","Compromiso","Proyección"]
+  };
 
   // ============ EMAILJS — completar con los datos de tu cuenta ============
   // 1. Service ID: EmailJS → Email Services
@@ -78,9 +103,12 @@
   function actualizarEstadoDirigente() {
     const nombre = nombreDirigente();
     const badge = document.getElementById('dirigente-nombre-badge');
-    if (badge) badge.textContent = nombre ? ('Identificado como: ' + nombre) : 'Todavía no ingresaste tu nombre';
     const input = document.getElementById('dirigente-nombre-input');
-    if (input && nombre) input.value = nombre;
+    const btn = document.getElementById('dirigente-nombre-btn');
+    const conGoogle = typeof sesionEstado !== 'undefined' && sesionEstado !== 'anon';
+    if (badge) badge.textContent = conGoogle ? `Identificado como: ${nombre} (cuenta de Google)` : (nombre ? ('Identificado como: ' + nombre) : 'Todavía no ingresaste tu nombre');
+    if (input) { input.style.display = conGoogle ? 'none' : ''; if (nombre) input.value = nombre; }
+    if (btn) btn.style.display = conGoogle ? 'none' : '';
     const ideaInput = document.getElementById('idea-nombre-input');
     if (ideaInput && nombre && !ideaInput.value) ideaInput.value = nombre;
   }
@@ -379,7 +407,8 @@
 
   onAuthStateChanged(auth, async (user) => {
     if (!user || !user.email) {
-      sesionEmail = null; sesionEsAdmin = false; sesionEstado = 'anon';
+      sesionEmail = null; sesionEsAdmin = false; sesionEstado = 'anon'; misRamas = [];
+      actualizarEstadoDirigente();
       window.renderAccesoUI();
       return;
     }
@@ -414,9 +443,14 @@
   });
 
   window.loginIntranetGoogle = () => {
-    signInWithPopup(auth, new GoogleAuthProvider()).catch(e => alert('No se pudo iniciar sesión: ' + e.message));
+    signInWithPopup(auth, new GoogleAuthProvider()).then(async (result) => {
+      try {
+        const credential = GoogleAuthProvider.credentialFromResult(result);
+        if (credential) { await signInWithCredential(scoutAuth, credential); scoutSesionOk = true; }
+      } catch (e) { console.error('No se pudo sincronizar la sesión con el Portal de Jóvenes:', e); scoutSesionOk = false; }
+    }).catch(e => alert('No se pudo iniciar sesión: ' + e.message));
   };
-  window.logoutIntranetGoogle = () => signOut(auth);
+  window.logoutIntranetGoogle = () => { signOut(scoutAuth).catch(() => {}); return signOut(auth); };
 
   function iniciarEscuchasAcceso() {
     onSnapshot(collection(db, "autorizados"), snap => {
@@ -651,14 +685,14 @@
     const yaElegidos = new Set((programaState.fechas[fi].filas[ri].personasCeremonia || []).map(p => p.id));
     const resultados = personasCache.filter(j => !yaElegidos.has(j.id) && `${j.nombre} ${j.apellido}`.toLowerCase().includes(q)).slice(0, 6);
     if (resultados.length === 0) { box.innerHTML = `<div class="persona-resultado-vacio">Sin resultados</div>`; box.style.display = 'block'; return; }
-    box.innerHTML = resultados.map(j => `<div class="persona-resultado-item" onclick='agregarPersonaCeremonia(${fi},${ri},"${j.id}",${JSON.stringify(j.nombre+' '+j.apellido).replace(/'/g,"&apos;")})'>${escapeHtml(j.nombre)} ${escapeHtml(j.apellido)} <span>${escapeHtml(j.rama||'')}</span></div>`).join('');
+    box.innerHTML = resultados.map(j => `<div class="persona-resultado-item" onclick='agregarPersonaCeremonia(${fi},${ri},"${j.id}",${JSON.stringify(j.nombre+' '+j.apellido).replace(/'/g,"&apos;")},"${j.email||''}")'>${escapeHtml(j.nombre)} ${escapeHtml(j.apellido)} <span>${escapeHtml(j.rama||'')}</span></div>`).join('');
     box.style.display = 'block';
   };
-  window.agregarPersonaCeremonia = (fi, ri, id, nombre) => {
+  window.agregarPersonaCeremonia = (fi, ri, id, nombre, email) => {
     sincronizarProgramaDesdeDOM();
     const fila = programaState.fechas[fi].filas[ri];
     if (!fila.personasCeremonia) fila.personasCeremonia = [];
-    if (!fila.personasCeremonia.some(p => p.id === id)) fila.personasCeremonia.push({ id, nombre });
+    if (!fila.personasCeremonia.some(p => p.id === id)) fila.personasCeremonia.push({ id, nombre, email: email || '' });
     renderProgramaForm();
   };
   window.quitarPersonaCeremonia = (fi, ri, id) => {
@@ -826,6 +860,51 @@
     }
   }
 
+  // Refleja el 100% de una ceremonia (Promesa / Etapa / Especialidad) en el perfil
+  // del chico dentro del Portal de Jóvenes, buscándolo por email.
+  async function sincronizarProgresoPortalJovenes(rama, tipo, personasArr) {
+    if (!scoutSesionOk) return { ok: false, motivo: 'sin-sesion-portal' };
+    const emails = (personasArr || []).map(p => p.email).filter(Boolean);
+    if (emails.length === 0) return { ok: false, motivo: 'sin-email' };
+    let actualizados = 0, sinPerfil = 0, errores = 0;
+    for (const email of emails) {
+      try {
+        const q = query(collection(scoutDb, "perfiles"), where("email", "==", email));
+        const snap = await getDocs(q);
+        if (snap.empty) { sinPerfil++; continue; }
+        const perfilDoc = snap.docs[0];
+        const perfil = perfilDoc.data();
+        const desarrollo = perfil.desarrollo || { porRama: {}, notas: [] };
+        const porRama = desarrollo.porRama || {};
+        const actual = porRama[rama] || { promesa: 0, etapas: {}, especialidades: [] };
+
+        const tipoNorm = (tipo || '').trim().toLowerCase();
+        const etapasRama = ETAPAS_POR_RAMA_SCOUT[rama] || [];
+        const etapaMatch = etapasRama.find(et => et.toLowerCase() === tipoNorm);
+
+        if (tipoNorm.includes('promesa')) {
+          actual.promesa = 100;
+        } else if (etapaMatch) {
+          if (!actual.etapas) actual.etapas = {};
+          actual.etapas[etapaMatch] = 100;
+        } else {
+          if (!actual.especialidades) actual.especialidades = [];
+          const idxEsp = actual.especialidades.findIndex(e => (e.nombre || '').toLowerCase() === tipoNorm);
+          if (idxEsp >= 0) actual.especialidades[idxEsp].pct = 100;
+          else actual.especialidades.push({ nombre: tipo, pct: 100 });
+        }
+
+        porRama[rama] = actual;
+        await updateDoc(doc(scoutDb, "perfiles", perfilDoc.id), { desarrollo: { ...desarrollo, porRama } });
+        actualizados++;
+      } catch (err) {
+        console.error('Error sincronizando progreso con el Portal de Jóvenes para', email, err);
+        errores++;
+      }
+    }
+    return { ok: true, actualizados, sinPerfil, errores };
+  }
+
   window.guardarProgramaFirestore = async () => {
     sincronizarProgramaDesdeDOM();
     const p = programaState;
@@ -838,7 +917,7 @@
       f.filas.forEach(r => {
         if (r.esCeremonia) {
           const personasTexto = (r.personasCeremonia || []).map(x => x.nombre).join(', ');
-          const item = { nombre: r.nombre || 'Actividad', personas: personasTexto, tipo: r.tipoCeremonia || 'Ceremonia', fecha: f.fecha, hora: r.hora || '' };
+          const item = { nombre: r.nombre || 'Actividad', personas: personasTexto, personasArr: r.personasCeremonia || [], tipo: r.tipoCeremonia || 'Ceremonia', fecha: f.fecha, hora: r.hora || '' };
           todasCeremonias.push(item);
           if (!r.promesaNotificada) { ceremoniasNuevas.push(item); r.promesaNotificada = true; }
         }
@@ -874,6 +953,19 @@
         else if (resultado.motivo === 'sin-emailjs') msg += ' (El envío de mail todavía no está configurado.)';
         else msg += ' (Hubo un error enviando el mail: ' + (resultado.error || '') + ')';
       }
+
+      // Reflejar el 100% en el Portal de Jóvenes para cada ceremonia nueva con personas con email
+      if (ceremoniasNuevas.length > 0) {
+        let totalActualizados = 0, totalSinPerfil = 0, huboError = false;
+        for (const cer of ceremoniasNuevas) {
+          const r = await sincronizarProgresoPortalJovenes(p.rama, cer.tipo, cer.personasArr);
+          if (r.ok) { totalActualizados += r.actualizados; totalSinPerfil += r.sinPerfil; if (r.errores) huboError = true; }
+        }
+        if (totalActualizados > 0) msg += ` Se actualizó el 100% en el Portal de Jóvenes para ${totalActualizados} chico(s).`;
+        if (totalSinPerfil > 0) msg += ` (${totalSinPerfil} persona(s) todavía no tienen perfil en el Portal de Jóvenes, o no se cargó su email.)`;
+        if (huboError) msg += ' (Hubo algún error sincronizando con el Portal de Jóvenes, revisá la consola.)';
+      }
+
       alert(msg);
       programaState = null;
       document.getElementById('programa-form-wrap').innerHTML = '';
@@ -1214,6 +1306,7 @@
   // ============ ACCESO UI (login gate compartido por Programa y Permisos) ============
   window.renderAccesoUI = () => {
     actualizarNavPermisos();
+    renderPerfilChip();
     ['programa', 'permisos'].forEach(tab => {
       const gate = document.getElementById(`${tab}-login-gate`);
       const appDiv = document.getElementById(`${tab}-app`);
@@ -1255,6 +1348,32 @@
     if (!sesionEsAdmin) return; // no hace nada: la solapa está deshabilitada para no-admins
     showTab('permisos');
   };
+
+  // Chip de perfil (visible logueado como admin o dirigente) con desplegable de cerrar sesión
+  function renderPerfilChip() {
+    const wrap = document.getElementById('perfil-chip-wrap');
+    if (!wrap) return;
+    if (sesionEstado === 'anon') { wrap.innerHTML = ''; return; }
+    const inicial = (sesionEmail || '?').charAt(0).toUpperCase();
+    wrap.innerHTML = `
+      <div class="perfil-chip" onclick="togglePerfilDropdown(event)">
+        <span class="perfil-chip-avatar">${inicial}</span>
+        <div class="perfil-dropdown" id="perfil-dropdown">
+          <div class="perfil-dropdown-email">${escapeHtml(sesionEmail)}</div>
+          <div class="perfil-dropdown-rol">${sesionEsAdmin ? '👑 Administrador' : sesionEstado === 'pending' ? '⏳ Acceso pendiente' : 'Dirigente'}</div>
+          <button class="perfil-dropdown-logout" onclick="logoutIntranetGoogle()">Cerrar sesión</button>
+        </div>
+      </div>`;
+  }
+  window.togglePerfilDropdown = (ev) => {
+    ev.stopPropagation();
+    const dd = document.getElementById('perfil-dropdown');
+    if (dd) dd.classList.toggle('show');
+  };
+  document.addEventListener('click', () => {
+    const dd = document.getElementById('perfil-dropdown');
+    if (dd) dd.classList.remove('show');
+  });
 
   // ============ PERMISOS: panel de administración ============
   const RAMAS_INTRANET = ['Castores','Manada','Scouts','Caminantes','Rovers'];
@@ -1946,6 +2065,22 @@
   .cronograma-fila-proxima td { background: var(--amarillo-cl); font-weight: 700; }
   .solo-lectura-tag { display: inline-block; margin-left: 8px; font-size: 10px; background: var(--fondo-cl); color: var(--text-sec); padding: 2px 7px; border-radius: 4px; font-style: italic; }
 
+  /* Chip de perfil (header) */
+  .perfil-chip { position: relative; margin-left: 12px; cursor: pointer; }
+  .perfil-chip-avatar {
+    width: 34px; height: 34px; border-radius: 50%; background: var(--amarillo); color: var(--azul);
+    display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 15px;
+    border: 2px solid rgba(255,255,255,0.5);
+  }
+  .perfil-dropdown {
+    display: none; position: absolute; top: 44px; right: 0; background: white; color: var(--text);
+    border-radius: 10px; box-shadow: var(--shadow); padding: 12px 14px; min-width: 200px; z-index: 200;
+  }
+  .perfil-dropdown.show { display: block; }
+  .perfil-dropdown-email { font-size: 12.5px; font-weight: 700; word-break: break-all; }
+  .perfil-dropdown-rol { font-size: 11px; color: var(--text-sec); margin: 4px 0 10px; }
+  .perfil-dropdown-logout { width: 100%; background: var(--rojo); color: white; border: none; border-radius: 8px; padding: 8px; font-size: 12.5px; font-weight: 700; cursor: pointer; font-family: 'Source Sans 3', sans-serif; }
+
   /* ---- FOOTER ---- */
   footer {
     text-align: center; padding: 20px; font-size: 12px;
@@ -1974,6 +2109,7 @@
       <p class="subtitle">Barracas · Buenos Aires · Portal de Dirigentes</p>
     </div>
     <div class="header-badge">Uso Interno</div>
+    <div id="perfil-chip-wrap"></div>
   </div>
 </header>
 
@@ -1983,7 +2119,7 @@
 
 <div class="id-bar-global">
   <input id="dirigente-nombre-input" placeholder="Tu nombre (para identificarte en Tareas, Muro de Ideas y Presentes)">
-  <button onclick="guardarNombreDirigente()">Guardar</button>
+  <button id="dirigente-nombre-btn" onclick="guardarNombreDirigente()">Guardar</button>
   <span id="dirigente-nombre-badge"></span>
 </div>
 
@@ -2008,6 +2144,7 @@
     <button class="tab-btn" onclick="showTab('programa')">📋 Programa</button>
     <button class="tab-btn tab-btn-disabled" id="nav-permisos-btn" onclick="clickTabPermisos()">🔐 Permisos</button>
     <a class="tab-btn" href="https://lapringles-dirigentes.github.io/ControlDeStock/" style="text-decoration:none; display:inline-block;">📦 Stock</a>
+    <a class="tab-btn" href="https://lapringles-dirigentes.github.io/portal-jovenes/" style="text-decoration:none; display:inline-block;">🧒 Portal Jóvenes</a>
   </div>
 </nav>
 
@@ -2028,6 +2165,12 @@
             <h3>Stock del Grupo</h3>
             <p>Control de stock del Chino y el Pañol: cantidades, vencimientos, pendientes y campamentos.</p>
             <span class="tool-link">Ir a Stock →</span>
+          </a>
+          <a class="tool-card" href="https://lapringles-dirigentes.github.io/portal-jovenes/">
+            <div class="tool-icon-wrap bg-rojo">🧒</div>
+            <h3>Portal de Jóvenes</h3>
+            <p>El espacio de los chicos: su desarrollo personal, trofeos y progresión por rama.</p>
+            <span class="tool-link">Ir al Portal de Jóvenes →</span>
           </a>
           <a class="tool-card" href="https://drive.google.com/drive/folders/10gAupj885xJgPfSgXiWDBIQhj31q_b2v?usp=sharing" target="_blank">
             <div class="tool-icon-wrap bg-amari">📁</div>
@@ -2355,6 +2498,10 @@
           <input id="fj-contacto" placeholder="Contacto (tel/email tutor)" value="${j.contacto||''}">
         </div>
         <div class="form-row">
+          <input id="fj-email" type="email" placeholder="Email del chico/a (opcional, para el Portal de Jóvenes)" value="${j.email||''}">
+        </div>
+        ${j.email ? `<p style="font-size:11px;color:var(--text-sec);margin-top:4px;">📱 Con este email queda pre-autorizado en el Portal de Jóvenes: <b>https://lapringles-dirigentes.github.io/portal-jovenes/</b></p>` : ''}
+        <div class="form-row">
           <button class="btn-presentes-accion" onclick="guardarFormJoven('${j.id||''}','${j.rama||''}')">💾 Guardar</button>
           <button class="btn-presentes-accion" style="background:#aaa" onclick="document.getElementById('form-joven-wrap').innerHTML=''">Cancelar</button>
         </div>
@@ -2367,7 +2514,8 @@
       apellido: document.getElementById('fj-apellido').value.trim(),
       fechaNacimiento: document.getElementById('fj-fecha').value,
       rama: document.getElementById('fj-rama').value,
-      contacto: document.getElementById('fj-contacto').value.trim()
+      contacto: document.getElementById('fj-contacto').value.trim(),
+      email: document.getElementById('fj-email').value.trim().toLowerCase()
     };
     if (!datos.nombre || !datos.apellido || !datos.rama) { alert('Completá nombre, apellido y rama.'); return; }
 
@@ -2376,8 +2524,29 @@
       delete datos.rama;
     }
     await window.guardarJoven(id || null, datos);
+
+    // Si cargó email, lo pre-autorizamos en el Portal de Jóvenes (proyecto scout-pringles)
+    if (datos.email) {
+      const resultado = await preautorizarEnPortalJovenes(datos.email, `${datos.nombre} ${datos.apellido}`, datos.rama);
+      if (!resultado.ok) console.warn('No se pudo pre-autorizar en el Portal de Jóvenes:', resultado.motivo);
+    }
     document.getElementById('form-joven-wrap').innerHTML = '';
   };
+
+  // Crea (o actualiza) la autorización del chico en scout-pringles, para que su perfil
+  // se genere solo la primera vez que entre al Portal de Jóvenes con su cuenta de Google.
+  async function preautorizarEnPortalJovenes(email, nombre, rama) {
+    if (!scoutSesionOk) return { ok: false, motivo: 'sin-sesion-portal' };
+    try {
+      const emailKey = email.replace(/\./g, "_");
+      await setDoc(doc(scoutDb, "autorizados", emailKey), {
+        email, nombre, rol: rama, aprobadoEn: serverTimestamp()
+      }, { merge: true });
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, motivo: err.message };
+    }
+  }
 
   window.exportarJovenesCSV = () => {
     const filas = [['Nombre','Apellido','Rama','Fecha nacimiento','Edad','Contacto']];
