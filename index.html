@@ -25,7 +25,7 @@
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
   import { getFirestore, doc, getDoc, setDoc, addDoc, collection,
     query, orderBy, onSnapshot, serverTimestamp, updateDoc, deleteDoc, getDocs,
-    where, writeBatch, arrayUnion, arrayRemove }
+    where, writeBatch, arrayUnion, arrayRemove, deleteField }
     from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
   import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged }
     from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
@@ -513,8 +513,8 @@
   };
 
 
-  // (La marca de "Promesa" ahora se hace únicamente desde el Programa mensual,
-  // tildando "Es una promesa" en la actividad correspondiente — ver más abajo.)
+  // (La marca de "Ceremonia" — promesa, pase, ascenso, etc. — ahora se hace únicamente
+  // desde el Programa mensual, tildando "Es Ceremonia" en la actividad correspondiente.)
 
 
   // ============ PROGRAMA MENSUAL: formulario dinámico + generación de PDF ============
@@ -522,33 +522,56 @@
   const LOGOS_RAMA = { Castores: 'rama-castores.jpg', Manada: 'rama-manada.jpg', Scouts: 'rama-tropa.jpg', Caminantes: 'rama-caminantes.jpg', Rovers: 'rama-rovers.jpg' };
   const ESCUDO_COMPANIA = 'pringles-removebg-preview.png';
   let programaState = null;
+  let personasCache = [];
   window.programasCache = [];
 
   window.nuevoProgramaForm = (programaExistente) => {
     if (programaExistente) {
       programaState = JSON.parse(JSON.stringify(programaExistente));
-      // Compatibilidad con programas viejos guardados con el formato de tabla (actividad, sin nombre/nota/etc)
-      programaState.fechas.forEach(f => f.filas.forEach(r => {
-        if (r.actividad !== undefined && r.nombre === undefined) r.nombre = r.actividad;
-      }));
+      // Compatibilidad con programas guardados en formatos anteriores
+      if (programaState.diagnostico === undefined) {
+        programaState.diagnostico = programaState.importancia || '';
+        programaState.tituloDiagnostico = 'Diagnóstico de la Rama';
+      }
+      if (programaState.tituloObjetivoCiclo === undefined) programaState.tituloObjetivoCiclo = 'Objetivo Trimestral';
       if (programaState.objetivoCiclo === undefined) programaState.objetivoCiclo = '';
+      programaState.fechas.forEach(f => {
+        if (f.marcoCuento === undefined) f.marcoCuento = '';
+        f.filas.forEach(r => {
+          if (r.esCeremonia === undefined) r.esCeremonia = !!r.promesa;
+          if (r.tipoCeremonia === undefined) r.tipoCeremonia = r.esCeremonia ? 'Promesa' : '';
+          if (r.personasCeremonia === undefined) r.personasCeremonia = [];
+          if (r.areasDesarrollo === undefined) r.areasDesarrollo = '';
+          if (r.ubicacion === undefined) r.ubicacion = r.lugar || '';
+          if (r.recursos === undefined) r.recursos = r.materiales || '';
+          if (r.dinamica === undefined) r.dinamica = [r.desarrollo, r.nota].filter(Boolean).join('\n');
+          if (r.duracion === undefined) r.duracion = '';
+          if (r.promesaNotificada === undefined) r.promesaNotificada = false;
+          if (r.actividad !== undefined && r.nombre === undefined) r.nombre = r.actividad;
+        });
+      });
     } else {
       const hoy = new Date();
       programaState = {
         editId: null, rama: 'Manada', mes: MESES_PROGRAMA[hoy.getMonth()], anio: hoy.getFullYear(),
-        tituloDocumento: `MANADA AÑO ${hoy.getFullYear()}`, planificacion: 'Mensual',
+        tituloDocumento: `- Manada Mohwa -`, planificacion: 'Mensual',
         jefatura: [{ rol: '', nombre: '' }],
-        lema: '', marcoSimbolico: '', importancia: '', objetivoCiclo: '',
+        lema: '', marcoSimbolico: '',
+        tituloDiagnostico: 'Diagnóstico de la Rama', diagnostico: '',
+        tituloObjetivoCiclo: 'Objetivo Trimestral', objetivoCiclo: '',
         metaAnual: [{ titulo: '', texto: '' }],
         objetivosMes: [{ titulo: '', texto: '' }],
         metasMes: [{ titulo: '', texto: '' }],
-        fechas: [{ fecha: '', filas: [nuevaActividadVacia()] }]
+        fechas: [{ fecha: '', marcoCuento: '', filas: [nuevaActividadVacia()] }]
       };
     }
     renderProgramaForm();
     document.getElementById('programa-form-wrap').scrollIntoView({ behavior: 'smooth' });
   };
-  function nuevaActividadVacia() { return { hora: '', nombre: '', desarrollo: '', nota: '', materiales: '', lugar: '', encargado: '', promesa: false, promesaNotificada: false }; }
+  function nuevaActividadVacia() {
+    return { hora: '', nombre: '', areasDesarrollo: '', ubicacion: '', recursos: '', dinamica: '', encargado: '', duracion: '',
+      esCeremonia: false, tipoCeremonia: '', personasCeremonia: [], promesaNotificada: false };
+  }
 
   function sincronizarProgramaDesdeDOM() {
     if (!programaState) return;
@@ -560,7 +583,9 @@
     programaState.planificacion = g('pf-planificacion').value;
     programaState.lema = g('pf-lema').value;
     programaState.marcoSimbolico = g('pf-marco').value;
-    programaState.importancia = g('pf-importancia').value;
+    programaState.tituloDiagnostico = g('pf-titulodiag').value || 'Diagnóstico de la Rama';
+    programaState.diagnostico = g('pf-diagnostico').value;
+    programaState.tituloObjetivoCiclo = g('pf-tituloobjciclo').value || 'Objetivo Trimestral';
     programaState.objetivoCiclo = g('pf-objetivociclo').value;
     programaState.jefatura.forEach((_, i) => {
       programaState.jefatura[i] = { rol: g(`jef-rol-${i}`)?.value || '', nombre: g(`jef-nombre-${i}`)?.value || '' };
@@ -572,20 +597,25 @@
     });
     programaState.fechas.forEach((f, fi) => {
       f.fecha = g(`fecha-${fi}`)?.value || '';
+      f.marcoCuento = g(`fecha-marco-${fi}`)?.value || '';
       f.filas.forEach((_, ri) => {
-        const promesaAntes = f.filas[ri]?.promesaNotificada || false;
-        const promesaAhora = g(`act-promesa-${fi}-${ri}`)?.checked || false;
+        const anterior = f.filas[ri] || {};
+        const promesaAntes = anterior.promesaNotificada || false;
+        const esCeremoniaAhora = g(`act-esceremonia-${fi}-${ri}`)?.checked || false;
         f.filas[ri] = {
           hora: g(`act-hora-${fi}-${ri}`)?.value || '',
           nombre: g(`act-nombre-${fi}-${ri}`)?.value || '',
-          desarrollo: g(`act-desarrollo-${fi}-${ri}`)?.value || '',
-          nota: g(`act-nota-${fi}-${ri}`)?.value || '',
-          materiales: g(`act-materiales-${fi}-${ri}`)?.value || '',
-          lugar: g(`act-lugar-${fi}-${ri}`)?.value || '',
+          areasDesarrollo: g(`act-areas-${fi}-${ri}`)?.value || '',
+          ubicacion: g(`act-ubicacion-${fi}-${ri}`)?.value || '',
+          recursos: g(`act-recursos-${fi}-${ri}`)?.value || '',
+          dinamica: g(`act-dinamica-${fi}-${ri}`)?.value || '',
           encargado: g(`act-encargado-${fi}-${ri}`)?.value || '',
-          promesa: promesaAhora,
+          duracion: g(`act-duracion-${fi}-${ri}`)?.value || '',
+          esCeremonia: esCeremoniaAhora,
+          tipoCeremonia: g(`act-tipoceremonia-${fi}-${ri}`)?.value || anterior.tipoCeremonia || '',
+          personasCeremonia: anterior.personasCeremonia || [],
           // si se destildó, se resetea el aviso para que si la vuelven a tildar, avise de nuevo
-          promesaNotificada: promesaAhora ? promesaAntes : false
+          promesaNotificada: esCeremoniaAhora ? promesaAntes : false
         };
       });
     });
@@ -593,10 +623,48 @@
 
   window.agregarFilaSimple = (campo) => { sincronizarProgramaDesdeDOM(); programaState[campo].push({ rol: '', nombre: '', titulo: '', texto: '' }); renderProgramaForm(); };
   window.quitarFilaSimple = (campo, i) => { sincronizarProgramaDesdeDOM(); programaState[campo].splice(i, 1); if (programaState[campo].length === 0) programaState[campo].push({}); renderProgramaForm(); };
-  window.agregarFecha = () => { sincronizarProgramaDesdeDOM(); programaState.fechas.push({ fecha: '', filas: [nuevaActividadVacia()] }); renderProgramaForm(); };
-  window.quitarFecha = (fi) => { sincronizarProgramaDesdeDOM(); programaState.fechas.splice(fi, 1); if (programaState.fechas.length === 0) programaState.fechas.push({ fecha: '', filas: [nuevaActividadVacia()] }); renderProgramaForm(); };
+  window.agregarFecha = () => { sincronizarProgramaDesdeDOM(); programaState.fechas.push({ fecha: '', marcoCuento: '', filas: [nuevaActividadVacia()] }); renderProgramaForm(); };
+  window.quitarFecha = (fi) => { sincronizarProgramaDesdeDOM(); programaState.fechas.splice(fi, 1); if (programaState.fechas.length === 0) programaState.fechas.push({ fecha: '', marcoCuento: '', filas: [nuevaActividadVacia()] }); renderProgramaForm(); };
   window.agregarFilaActividad = (fi) => { sincronizarProgramaDesdeDOM(); programaState.fechas[fi].filas.push(nuevaActividadVacia()); renderProgramaForm(); };
   window.quitarFilaActividad = (fi, ri) => { sincronizarProgramaDesdeDOM(); programaState.fechas[fi].filas.splice(ri, 1); if (programaState.fechas[fi].filas.length === 0) programaState.fechas[fi].filas.push(nuevaActividadVacia()); renderProgramaForm(); };
+
+  // --- Buscador de personas para la ceremonia (pueden ser varias) ---
+  async function asegurarPersonasCache() {
+    if (personasCache.length > 0) return;
+    if (window.jovenesCache && window.jovenesCache.length > 0) { personasCache = window.jovenesCache; return; }
+    try {
+      const snap = await getDocs(collection(db, "jovenes"));
+      personasCache = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(j => j.activo !== false);
+    } catch (e) { console.error('No se pudo cargar la lista de jóvenes para el buscador:', e); }
+  }
+  window.buscarPersonaCeremonia = async (fi, ri, texto) => {
+    await asegurarPersonasCache();
+    const box = document.getElementById(`persona-resultados-${fi}-${ri}`);
+    if (!box) return;
+    const q = texto.trim().toLowerCase();
+    if (q.length < 2) { box.innerHTML = ''; box.style.display = 'none'; return; }
+    const yaElegidos = new Set((programaState.fechas[fi].filas[ri].personasCeremonia || []).map(p => p.id));
+    const resultados = personasCache.filter(j => !yaElegidos.has(j.id) && `${j.nombre} ${j.apellido}`.toLowerCase().includes(q)).slice(0, 6);
+    if (resultados.length === 0) { box.innerHTML = `<div class="persona-resultado-vacio">Sin resultados</div>`; box.style.display = 'block'; return; }
+    box.innerHTML = resultados.map(j => `<div class="persona-resultado-item" onclick='agregarPersonaCeremonia(${fi},${ri},"${j.id}",${JSON.stringify(j.nombre+' '+j.apellido).replace(/'/g,"&apos;")})'>${escapeHtml(j.nombre)} ${escapeHtml(j.apellido)} <span>${escapeHtml(j.rama||'')}</span></div>`).join('');
+    box.style.display = 'block';
+  };
+  window.agregarPersonaCeremonia = (fi, ri, id, nombre) => {
+    sincronizarProgramaDesdeDOM();
+    const fila = programaState.fechas[fi].filas[ri];
+    if (!fila.personasCeremonia) fila.personasCeremonia = [];
+    if (!fila.personasCeremonia.some(p => p.id === id)) fila.personasCeremonia.push({ id, nombre });
+    renderProgramaForm();
+  };
+  window.quitarPersonaCeremonia = (fi, ri, id) => {
+    sincronizarProgramaDesdeDOM();
+    programaState.fechas[fi].filas[ri].personasCeremonia = (programaState.fechas[fi].filas[ri].personasCeremonia || []).filter(p => p.id !== id);
+    renderProgramaForm();
+  };
+  window.toggleCeremoniaExtra = (fi, ri, checked) => {
+    const el = document.getElementById(`ceremonia-extra-${fi}-${ri}`);
+    if (el) el.style.display = checked ? 'block' : 'none';
+  };
 
   function renderProgramaForm() {
     const p = programaState;
@@ -620,23 +688,27 @@
         <h4>Jefatura <span class="opcional-tag">(opcional — dejar vacío si ya se cargó otro mes)</span></h4>
         ${p.jefatura.map((j,i) => `
           <div class="programa-dyn-row">
-            <input id="jef-rol-${i}" placeholder="Rol (ej: Akela)" value="${escapeHtml(j.rol||'')}">
             <input id="jef-nombre-${i}" placeholder="Nombre" value="${escapeHtml(j.nombre||'')}">
+            <input id="jef-rol-${i}" placeholder="Rol (ej: Jefe de rama)" value="${escapeHtml(j.rol||'')}">
             <button class="btn-quitar-fila" onclick="quitarFilaSimple('jefatura',${i})">✕</button>
           </div>`).join('')}
         <button class="btn-agregar-fila" onclick="agregarFilaSimple('jefatura')">+ Agregar jefe/a</button>
       </div>
 
       <div class="programa-form-section">
-        <h4>Lema y Marco Simbólico</h4>
-        <input id="pf-lema" placeholder="Lema (ej: ¡Siempre Mejor!)" value="${escapeHtml(p.lema)}">
-        <input id="pf-marco" placeholder="Marco Simbólico" value="${escapeHtml(p.marcoSimbolico)}" style="margin-top:8px;">
-        <label style="font-size:11px; color:var(--text-sec); display:block; margin:8px 0 3px;">Importancia de la formación <span class="opcional-tag">(opcional)</span></label>
-        <textarea id="pf-importancia" style="min-height:70px;">${escapeHtml(p.importancia)}</textarea>
+        <h4>Diagnóstico de la Rama <span class="opcional-tag">(opcional — título editable)</span></h4>
+        <input id="pf-titulodiag" value="${escapeHtml(p.tituloDiagnostico || 'Diagnóstico de la Rama')}">
+        <textarea id="pf-diagnostico" style="min-height:70px; margin-top:8px;" placeholder="Trabajo y afianzamiento de cada niño/a dentro de la manada...">${escapeHtml(p.diagnostico)}</textarea>
       </div>
 
       <div class="programa-form-section">
-        <h4>Meta Anual</h4>
+        <h4>Objetivos y Lineamientos</h4>
+        <input id="pf-lema" placeholder="Lema (ej: ¡Siempre Mejor!)" value="${escapeHtml(p.lema)}">
+        <input id="pf-marco" placeholder="Marco Simbólico" value="${escapeHtml(p.marcoSimbolico)}" style="margin-top:8px;">
+      </div>
+
+      <div class="programa-form-section">
+        <h4>Meta Anual <span class="opcional-tag">(opcional)</span></h4>
         ${p.metaAnual.map((it,i) => `
           <div class="programa-dyn-row">
             <input id="metaAnual-titulo-${i}" placeholder="Título en negrita (opcional)" value="${escapeHtml(it.titulo||'')}">
@@ -647,12 +719,13 @@
       </div>
 
       <div class="programa-form-section">
-        <h4>Objetivo de "Ciclo de programa" <span class="opcional-tag">(opcional)</span></h4>
-        <textarea id="pf-objetivociclo" placeholder='Ej: En este ciclo el objetivo será...'>${escapeHtml(p.objetivoCiclo)}</textarea>
+        <h4>Objetivo del ciclo <span class="opcional-tag">(título editable — ej: "Objetivo Trimestral")</span></h4>
+        <input id="pf-tituloobjciclo" value="${escapeHtml(p.tituloObjetivoCiclo || 'Objetivo Trimestral')}">
+        <textarea id="pf-objetivociclo" style="margin-top:8px;" placeholder='Ej: En este mes se hará el cierre final del juego proyecto...'>${escapeHtml(p.objetivoCiclo)}</textarea>
       </div>
 
       <div class="programa-form-section">
-        <h4>Objetivo por mes</h4>
+        <h4>Objetivo por mes <span class="opcional-tag">(opcional)</span></h4>
         ${p.objetivosMes.map((it,i) => `
           <div class="programa-dyn-row">
             <input id="objetivosMes-titulo-${i}" placeholder="Mes (ej: Junio)" value="${escapeHtml(it.titulo||'')}" style="max-width:130px;">
@@ -681,20 +754,38 @@
               <input id="fecha-${fi}" type="date" value="${f.fecha||''}">
               <button class="btn-quitar-fila" onclick="quitarFecha(${fi})">✕ Quitar fecha</button>
             </div>
+            <input id="fecha-marco-${fi}" placeholder='Marco Simbólico / Cuentos de la Selva de esta fecha (opcional)' value="${escapeHtml(f.marcoCuento||'')}" style="margin-bottom:12px;">
             ${f.filas.map((r,ri) => `
               <div class="actividad-block-form">
                 <div class="actividad-block-top">
                   <label class="actividad-hora-label">Hora <input id="act-hora-${fi}-${ri}" type="time" value="${escapeHtml(r.hora||'')}"></label>
-                  <label class="actividad-promesa-check"><input id="act-promesa-${fi}-${ri}" type="checkbox" ${r.promesa?'checked':''}> 🎗️ Es una promesa</label>
+                  <label class="actividad-promesa-check"><input id="act-esceremonia-${fi}-${ri}" type="checkbox" ${r.esCeremonia?'checked':''} onchange="toggleCeremoniaExtra(${fi},${ri},this.checked)"> 🎗️ Es Ceremonia</label>
                   <button class="btn-quitar-fila" onclick="quitarFilaActividad(${fi},${ri})">✕ Quitar</button>
                 </div>
-                <input id="act-nombre-${fi}-${ri}" placeholder="Nombre de la actividad" value="${escapeHtml(r.nombre||'')}" style="margin-top:6px;">
-                <textarea id="act-desarrollo-${fi}-${ri}" placeholder="Desarrollo (opcional)" style="margin-top:6px;">${escapeHtml(r.desarrollo||'')}</textarea>
-                <textarea id="act-nota-${fi}-${ri}" placeholder="Nota (opcional)" style="margin-top:6px;">${escapeHtml(r.nota||'')}</textarea>
+
+                <div id="ceremonia-extra-${fi}-${ri}" class="ceremonia-extra" style="display:${r.esCeremonia?'block':'none'};">
+                  <label style="font-size:11px; color:var(--text-sec); display:block; margin-bottom:3px;">Tipo de ceremonia (Promesa, Pase, Ascenso, etc.)</label>
+                  <input id="act-tipoceremonia-${fi}-${ri}" placeholder="Ej: Promesa" value="${escapeHtml(r.tipoCeremonia||'')}">
+                  <label style="font-size:11px; color:var(--text-sec); display:block; margin:8px 0 3px;">Persona/s que hacen la ceremonia</label>
+                  <div class="persona-chips">
+                    ${(r.personasCeremonia||[]).map(pc => `<span class="persona-chip">${escapeHtml(pc.nombre)} <button onclick="quitarPersonaCeremonia(${fi},${ri},'${pc.id}')">✕</button></span>`).join('') || '<span class="jefe-rama-vacio">Nadie seleccionado todavía</span>'}
+                  </div>
+                  <div class="persona-buscador">
+                    <input placeholder="Buscar joven por nombre..." oninput="buscarPersonaCeremonia(${fi},${ri},this.value)">
+                    <div id="persona-resultados-${fi}-${ri}" class="persona-resultados"></div>
+                  </div>
+                </div>
+
+                <input id="act-nombre-${fi}-${ri}" placeholder="Nombre de la actividad" value="${escapeHtml(r.nombre||'')}" style="margin-top:10px;">
                 <div class="form-row" style="margin-top:6px;">
-                  <input id="act-materiales-${fi}-${ri}" placeholder="Materiales (opcional)" value="${escapeHtml(r.materiales||'')}">
-                  <input id="act-lugar-${fi}-${ri}" placeholder="Lugar (opcional)" value="${escapeHtml(r.lugar||'')}">
+                  <input id="act-areas-${fi}-${ri}" placeholder="Áreas de Desarrollo (opcional)" value="${escapeHtml(r.areasDesarrollo||'')}">
+                  <input id="act-ubicacion-${fi}-${ri}" placeholder="Ubicación (opcional)" value="${escapeHtml(r.ubicacion||'')}">
+                </div>
+                <input id="act-recursos-${fi}-${ri}" placeholder="Recursos (opcional)" value="${escapeHtml(r.recursos||'')}" style="margin-top:6px;">
+                <textarea id="act-dinamica-${fi}-${ri}" placeholder="Dinámica y Desarrollo (opcional)" style="margin-top:6px;">${escapeHtml(r.dinamica||'')}</textarea>
+                <div class="form-row" style="margin-top:6px;">
                   <input id="act-encargado-${fi}-${ri}" placeholder="Encargado (opcional)" value="${escapeHtml(r.encargado||'')}">
+                  <input id="act-duracion-${fi}-${ri}" placeholder="Duración (ej: 30 min)" value="${escapeHtml(r.duracion||'')}">
                 </div>
               </div>`).join('')}
             <button class="btn-agregar-fila" onclick="agregarFilaActividad(${fi})">+ Agregar actividad/horario</button>
@@ -706,23 +797,26 @@
         <button class="btn-presentes-accion" onclick="guardarProgramaFirestore()">💾 Guardar programa</button>
         <button class="btn-presentes-accion" style="background:#aaa" onclick="cancelarProgramaForm()">Cancelar</button>
       </div>`;
+    asegurarPersonasCache();
   }
 
   window.cancelarProgramaForm = () => { programaState = null; document.getElementById('programa-form-wrap').innerHTML = ''; };
 
-  async function enviarAlertaPromesaPrograma(rama, actividadesNuevas) {
+  async function enviarAlertaCeremoniaPrograma(rama, ceremoniasNuevas) {
     const destinatarios = todosLosJefesYAdmins();
     if (destinatarios.length === 0 || !window.emailjs || EMAILJS_PUBLIC_KEY.startsWith('PONÉ')) return { enviado: false, motivo: destinatarios.length === 0 ? 'sin-jefes' : 'sin-emailjs' };
     try {
-      for (const act of actividadesNuevas) {
-        const fechaFmt = act.fecha ? act.fecha.split('-').reverse().join('/') : '';
+      for (const cer of ceremoniasNuevas) {
+        const fechaFmt = cer.fecha ? cer.fecha.split('-').reverse().join('/') : '';
+        const personasTexto = cer.personas || cer.nombre;
         await Promise.all(destinatarios.map(email => window.emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_PROMESA, {
-          to_email: email, joven_nombre: act.nombre, rama, fecha: fechaFmt, hora: act.hora || '', marcado_por: sesionEmail
+          to_email: email, joven_nombre: `${cer.tipo ? cer.tipo + ': ' : ''}${personasTexto}`, tipo: cer.tipo || 'Ceremonia',
+          rama, fecha: fechaFmt, hora: cer.hora || '', marcado_por: sesionEmail
         })));
       }
       return { enviado: true };
     } catch (err) {
-      console.error('Error enviando alerta de promesa desde Programa:', err);
+      console.error('Error enviando alerta de ceremonia desde Programa:', err);
       return { enviado: false, motivo: 'error', error: err.message };
     }
   }
@@ -732,13 +826,16 @@
     const p = programaState;
     if (!p.rama || !p.mes) { alert('Elegí rama y mes.'); return; }
 
-    // Actividades marcadas como Promesa que todavía no dispararon el aviso
-    const promesasNuevas = [];
+    // Actividades de Ceremonia: separamos las "nuevas" (para el mail) de "todas" (para el cuadro de próximas)
+    const ceremoniasNuevas = [];
+    const todasCeremonias = [];
     p.fechas.forEach(f => {
       f.filas.forEach(r => {
-        if (r.promesa && !r.promesaNotificada) {
-          promesasNuevas.push({ nombre: r.nombre || 'Actividad de Promesa', fecha: f.fecha, hora: r.hora || '' });
-          r.promesaNotificada = true;
+        if (r.esCeremonia) {
+          const personasTexto = (r.personasCeremonia || []).map(x => x.nombre).join(', ');
+          const item = { nombre: r.nombre || 'Actividad', personas: personasTexto, tipo: r.tipoCeremonia || 'Ceremonia', fecha: f.fecha, hora: r.hora || '' };
+          todasCeremonias.push(item);
+          if (!r.promesaNotificada) { ceremoniasNuevas.push(item); r.promesaNotificada = true; }
         }
       });
     });
@@ -747,16 +844,28 @@
     const editId = datos.editId;
     delete datos.editId;
     try {
+      let progId = editId;
       if (editId) {
         await updateDoc(doc(db, "programas", editId), { ...datos, actualizadoEn: serverTimestamp() });
       } else {
-        await addDoc(collection(db, "programas"), { ...datos, creadoPor: sesionEmail, creadoEn: serverTimestamp() });
+        const ref = await addDoc(collection(db, "programas"), { ...datos, creadoPor: sesionEmail, creadoEn: serverTimestamp() });
+        progId = ref.id;
       }
+
+      // Mirror público de próximas ceremonias, para el cuadro del Inicio (que no pide login)
+      try {
+        const hoyISO = new Date().toISOString().slice(0,10);
+        const proximas = todasCeremonias.filter(c => c.fecha && c.fecha >= hoyISO).map(c => ({ ...c, rama: p.rama }));
+        const refMirror = doc(db, "config_publico", "proximas_ceremonias");
+        if (proximas.length > 0) await setDoc(refMirror, { [progId]: proximas }, { merge: true });
+        else await updateDoc(refMirror, { [progId]: deleteField() }).catch(() => {});
+      } catch (e) { console.error('No se pudo actualizar el cuadro de próximas ceremonias:', e); }
+
       let msg = '✅ Programa guardado.';
-      if (promesasNuevas.length > 0) {
-        const resultado = await enviarAlertaPromesaPrograma(p.rama, promesasNuevas);
-        if (resultado.enviado) msg += ` Se avisó a todos los jefes de rama sobre ${promesasNuevas.length} actividad(es) de promesa.`;
-        else if (resultado.motivo === 'sin-jefes') msg += ` (Hay ${promesasNuevas.length} actividad(es) de promesa, pero todavía no hay ningún jefe de rama cargado en Permisos, así que no se avisó por mail.)`;
+      if (ceremoniasNuevas.length > 0) {
+        const resultado = await enviarAlertaCeremoniaPrograma(p.rama, ceremoniasNuevas);
+        if (resultado.enviado) msg += ` Se avisó a todos los jefes de rama sobre ${ceremoniasNuevas.length} ceremonia(s).`;
+        else if (resultado.motivo === 'sin-jefes') msg += ` (Hay ${ceremoniasNuevas.length} ceremonia(s), pero todavía no hay ningún jefe de rama cargado en Permisos, así que no se avisó por mail.)`;
         else if (resultado.motivo === 'sin-emailjs') msg += ' (El envío de mail todavía no está configurado.)';
         else msg += ' (Hubo un error enviando el mail: ' + (resultado.error || '') + ')';
       }
@@ -789,7 +898,10 @@
   };
   window.eliminarProgramaExistente = async (id) => {
     if (!confirm('¿Eliminar este programa guardado?')) return;
-    await deleteDoc(doc(db, "programas", id));
+    try {
+      await deleteDoc(doc(db, "programas", id));
+      await updateDoc(doc(db, "config_publico", "proximas_ceremonias"), { [id]: deleteField() }).catch(() => {});
+    } catch (err) { alert('⚠️ No se pudo eliminar: ' + err.message); }
   };
   window.descargarProgramaPDF = (id) => {
     const pr = window.programasCache.find(x => x.id === id);
@@ -808,14 +920,18 @@
   }
 
   function actividadBlockHTML(r) {
+    const personas = (r.personasCeremonia || []).map(x => x.nombre).join(', ');
+    const headerLabel = r.esCeremonia ? `${r.tipoCeremonia || 'Ceremonia'}${personas ? ' de ' + personas : ''}` : (r.nombre || '');
     let html = `<div class="pdf-activity">`;
-    html += `<div class="pdf-activity-hora">● ${escapeHtml(r.hora || '')} hs${r.promesa ? ' <span class="pdf-promesa-tag">🎗️ Promesa</span>' : ''}</div>`;
-    if (r.nombre) html += `<div class="pdf-body-text"><b>Nombre:</b> ${escapeHtml(r.nombre)}</div>`;
-    if (r.desarrollo) html += `<div class="pdf-body-text"><b>Desarrollo:</b> ${escapeHtml(r.desarrollo)}</div>`;
-    if (r.nota) html += `<div class="pdf-body-text"><b>Nota:</b> ${escapeHtml(r.nota).replace(/\n/g,'<br>')}</div>`;
-    if (r.materiales) html += `<div class="pdf-body-text"><b>Materiales:</b> ${escapeHtml(r.materiales)}</div>`;
-    if (r.lugar) html += `<div class="pdf-body-text"><b>Lugar:</b> ${escapeHtml(r.lugar)}</div>`;
-    if (r.encargado) html += `<div class="pdf-body-text"><b>Encargado:</b> ${escapeHtml(r.encargado)}</div>`;
+    html += `<div class="pdf-activity-hora">● ${escapeHtml(r.hora || '')} hs — ${escapeHtml(headerLabel)}${r.esCeremonia ? ' <span class="pdf-promesa-tag">🎗️ Ceremonia</span>' : ''}</div>`;
+    const nombreLinea = r.esCeremonia ? headerLabel : r.nombre;
+    if (nombreLinea) html += `<div class="pdf-body-text">○ <b>Nombre:</b> ${escapeHtml(nombreLinea)}</div>`;
+    if (r.areasDesarrollo) html += `<div class="pdf-body-text">○ <b>Áreas de Desarrollo:</b> ${escapeHtml(r.areasDesarrollo)}</div>`;
+    if (r.ubicacion) html += `<div class="pdf-body-text">○ <b>Ubicación:</b> ${escapeHtml(r.ubicacion)}</div>`;
+    if (r.recursos) html += `<div class="pdf-body-text">○ <b>Recursos:</b> ${escapeHtml(r.recursos)}</div>`;
+    if (r.dinamica) html += `<div class="pdf-body-text">○ <b>Dinámica y Desarrollo:</b> ${escapeHtml(r.dinamica).replace(/\n/g,'<br>')}</div>`;
+    if (r.encargado) html += `<div class="pdf-body-text">○ <b>Encargado:</b> ${escapeHtml(r.encargado)}</div>`;
+    if (r.duracion) html += `<div class="pdf-body-text">○ <b>Duración:</b> ${escapeHtml(r.duracion)}</div>`;
     html += `</div>`;
     return html;
   }
@@ -835,10 +951,11 @@
   }
 
   // Corta los bloques de actividad de una fecha en tantas páginas como haga falta según el alto real
-  async function paginarFecha(f, alturaHeaderPx, primeraFechaDelBloque) {
+  async function paginarFecha(f, alturaHeaderPx) {
     const fechaFmt = f.fecha ? f.fecha.split('-').reverse().join('/') : '';
-    const fechaBoxHTML = `<div class="pdf-fecha-box">Fecha: ${fechaFmt}</div>`;
-    const bloques = [fechaBoxHTML, ...f.filas.map(actividadBlockHTML)];
+    let fechaHTML = `<div class="pdf-fecha-linea"><b>Fecha:</b> ${fechaFmt}</div>`;
+    if (f.marcoCuento) fechaHTML += `<div class="pdf-fecha-linea"><b>Marco Simbólico / Cuentos de la Selva:</b> ${escapeHtml(f.marcoCuento)}</div>`;
+    const bloques = [fechaHTML, ...f.filas.map(actividadBlockHTML)];
     const alturas = [];
     for (const b of bloques) alturas.push(await medirAlturaPx(b));
 
@@ -865,17 +982,20 @@
 
     let front = '';
     front += `<div class="pdf-title">${escapeHtml(p.tituloDocumento)}</div>`;
-    front += `<div class="pdf-body-text" style="text-align:center; text-decoration:underline; font-weight:700;">Programa ${escapeHtml(p.mes)} – ${escapeHtml(p.rama)}.</div>`;
-    if (p.planificacion) front += `<div class="pdf-body-text"><b>Planificación:</b> ${escapeHtml(p.planificacion)}</div>`;
     if (p.jefatura.some(j => j.nombre || j.rol)) {
-      front += `<div class="pdf-section-title">Jefatura:</div><ul class="pdf-list">${p.jefatura.filter(j => j.nombre || j.rol).map(j => `<li>${escapeHtml(j.rol)} - (${escapeHtml(j.nombre)})</li>`).join('')}</ul>`;
+      front += `<div class="pdf-section-title">Jefatura:</div><ul class="pdf-list">${p.jefatura.filter(j => j.nombre || j.rol).map(j => `<li>${escapeHtml(j.nombre)}${j.rol ? ' (' + escapeHtml(j.rol) + ')' : ''}</li>`).join('')}</ul>`;
     }
-    if (p.lema) front += `<div class="pdf-body-text"><b>Lema:</b> ${escapeHtml(p.lema)}</div>`;
-    if (p.marcoSimbolico) front += `<div class="pdf-body-text"><b>Marco Simbólico:</b> "${escapeHtml(p.marcoSimbolico)}"</div>`;
-    if (p.importancia) front += `<div class="pdf-hr"></div><div class="pdf-section-title">Importancia de la formación:</div><div class="pdf-body-text">${escapeHtml(p.importancia)}</div>`;
+    front += `<div class="pdf-body-text" style="text-align:center; font-weight:700; margin-top:10px;">Año: ${escapeHtml(String(p.anio))} | Mes: ${escapeHtml(p.mes)}</div>`;
+    if (p.diagnostico) front += `<div class="pdf-hr"></div><div class="pdf-section-title">${escapeHtml(p.tituloDiagnostico || 'Diagnóstico de la Rama')}</div><div class="pdf-body-text">${escapeHtml(p.diagnostico)}</div>`;
+    if (p.lema || p.marcoSimbolico) {
+      front += `<div class="pdf-section-title">Objetivos y Lineamientos</div><ul class="pdf-list">`;
+      if (p.lema) front += `<li><b>Lema:</b> ${escapeHtml(p.lema)}</li>`;
+      if (p.marcoSimbolico) front += `<li><b>Marco Simbólico:</b> ${escapeHtml(p.marcoSimbolico)}</li>`;
+      front += `</ul>`;
+    }
+    if (p.objetivoCiclo) front += `<div class="pdf-body-text"><b>${escapeHtml(p.tituloObjetivoCiclo || 'Objetivo Trimestral')}:</b> ${escapeHtml(p.objetivoCiclo)}</div>`;
     const metaAnualLlena = p.metaAnual.filter(m => m.texto || m.titulo);
     if (metaAnualLlena.length) front += `<div class="pdf-hr"></div><div class="pdf-section-title">Meta Anual:</div><ul class="pdf-list">${metaAnualLlena.map(m => `<li>${m.titulo?`<b>${escapeHtml(m.titulo)}:</b> `:''}${escapeHtml(m.texto)}</li>`).join('')}</ul>`;
-    if (p.objetivoCiclo) front += `<div class="pdf-body-text"><b>Objetivo de "Ciclo de programa":</b> "${escapeHtml(p.objetivoCiclo)}"</div>`;
     const objMesLleno = p.objetivosMes.filter(o => o.texto || o.titulo);
     if (objMesLleno.length) front += `<div class="pdf-section-title">Objetivo por mes:</div><ul class="pdf-list">${objMesLleno.map(o => `<li>${o.titulo?`<b>${escapeHtml(o.titulo)}:</b> `:''}"${escapeHtml(o.texto)}"</li>`).join('')}</ul>`;
     const metasMesLlena = p.metasMes.filter(m => m.texto || m.titulo);
@@ -919,6 +1039,119 @@
       cont.innerHTML = '';
     }
   }
+
+  // ============ PRÓXIMAS CEREMONIAS (cuadro público en Inicio, sin login) ============
+  onSnapshot(doc(db, "config_publico", "proximas_ceremonias"), d => {
+    const data = d.exists() ? d.data() : {};
+    const hoyISO = new Date().toISOString().slice(0,10);
+    const todas = Object.values(data).flat().filter(c => c && c.fecha && c.fecha >= hoyISO);
+    todas.sort((a,b) => (a.fecha + (a.hora||'')).localeCompare(b.fecha + (b.hora||'')));
+    const wrap = document.getElementById('proximas-ceremonias-wrap');
+    if (!wrap) return;
+    if (todas.length === 0) { wrap.innerHTML = ''; return; }
+    wrap.innerHTML = `
+      <div class="card">
+        <div class="card-header"><div class="icon icon-amari">🎗️</div><h2>Próximas Ceremonias</h2></div>
+        <div class="presentes-wrap">
+          ${todas.slice(0, 8).map(c => `
+            <div class="ceremonia-proxima-item">
+              <div class="ceremonia-proxima-fecha">${fmtFechaCorta(c.fecha)}${c.hora ? ' · ' + c.hora + 'hs' : ''}</div>
+              <div class="ceremonia-proxima-info"><strong>${escapeHtml(c.tipo || 'Ceremonia')}</strong> — ${escapeHtml(c.personas || c.nombre || '')} <span>(${escapeHtml(c.rama||'')})</span></div>
+            </div>`).join('')}
+        </div>
+      </div>`;
+  });
+  function fmtFechaCorta(iso) {
+    if (!iso) return '';
+    const d = new Date(iso + 'T00:00:00');
+    return d.toLocaleDateString('es-AR', { weekday: 'short', day: '2-digit', month: 'short' });
+  }
+
+  // ============ CRONOGRAMA DE ENTREGA DE PROGRAMAS (editable por admin) ============
+  let cronogramaCache = [];
+  onSnapshot(doc(db, "config", "cronograma_entregas"), d => {
+    cronogramaCache = d.exists() && d.data().filas ? d.data().filas : [];
+    renderCronogramaProgramaTab();
+    if (window.renderCronogramaAdmin) window.renderCronogramaAdmin();
+  }, () => { /* si el usuario todavía no está autorizado, isAutorizado() bloquea la lectura; no hacemos nada */ });
+
+  function renderCronogramaProgramaTab() {
+    const wrap = document.getElementById('cronograma-entregas-wrap');
+    if (!wrap) return;
+    if (cronogramaCache.length === 0) { wrap.innerHTML = ''; return; }
+    wrap.innerHTML = `
+      <div class="card">
+        <div class="card-header"><div class="icon icon-verde">🗓️</div><h2>Cronograma de Entrega de Programas</h2></div>
+        <div class="presentes-wrap">
+          <table class="cronograma-tabla">
+            <tr><th>Ciclo</th><th>Fecha de Entrega</th></tr>
+            ${cronogramaCache.map(f => `<tr><td>${escapeHtml(f.evento||'')}</td><td>${f.fecha ? fmtFechaCortaDMY(f.fecha) : ''}</td></tr>`).join('')}
+          </table>
+        </div>
+      </div>`;
+  }
+  function fmtFechaCortaDMY(iso) {
+    if (!iso) return '';
+    return iso.split('-').reverse().join('/');
+  }
+
+  let cronogramaEditState = null;
+  window.abrirEdicionCronograma = () => {
+    cronogramaEditState = cronogramaCache.length > 0 ? JSON.parse(JSON.stringify(cronogramaCache)) : [{ evento: '', fecha: '' }];
+    window.renderCronogramaAdmin();
+  };
+  window.agregarFilaCronograma = () => { cronogramaEditState.push({ evento: '', fecha: '' }); window.renderCronogramaAdmin(); };
+  window.quitarFilaCronograma = (i) => {
+    const g = id => document.getElementById(id);
+    cronogramaEditState.forEach((_, idx) => { cronogramaEditState[idx] = { evento: g(`cronog-evento-${idx}`)?.value || '', fecha: g(`cronog-fecha-${idx}`)?.value || '' }; });
+    cronogramaEditState.splice(i, 1);
+    window.renderCronogramaAdmin();
+  };
+  window.guardarCronograma = async () => {
+    const g = id => document.getElementById(id);
+    cronogramaEditState.forEach((_, idx) => { cronogramaEditState[idx] = { evento: g(`cronog-evento-${idx}`)?.value || '', fecha: g(`cronog-fecha-${idx}`)?.value || '' }; });
+    try {
+      await setDoc(doc(db, "config", "cronograma_entregas"), { filas: cronogramaEditState }, { merge: true });
+      alert('✅ Cronograma guardado.');
+      cronogramaEditState = null;
+      window.renderCronogramaAdmin();
+    } catch (err) { alert('⚠️ No se pudo guardar el cronograma: ' + err.message); }
+  };
+  window.renderCronogramaAdmin = () => {
+    const cont = document.getElementById('cronograma-admin-wrap');
+    if (!cont || sesionEstado !== 'ok' || !sesionEsAdmin) return;
+    if (!cronogramaEditState) {
+      cont.innerHTML = `
+        <div class="card">
+          <div class="card-header"><div class="icon icon-verde">🗓️</div><h2>Cronograma de Entrega de Programas</h2></div>
+          <div class="presentes-wrap">
+            <table class="cronograma-tabla">
+              <tr><th>Ciclo</th><th>Fecha de Entrega</th></tr>
+              ${cronogramaCache.map(f => `<tr><td>${escapeHtml(f.evento||'')}</td><td>${f.fecha ? fmtFechaCortaDMY(f.fecha) : ''}</td></tr>`).join('') || '<tr><td colspan="2">Sin cargar todavía.</td></tr>'}
+            </table>
+            <button class="btn-presentes-accion" onclick="abrirEdicionCronograma()" style="margin-top:10px;">✏️ Editar cronograma</button>
+          </div>
+        </div>`;
+      return;
+    }
+    cont.innerHTML = `
+      <div class="card">
+        <div class="card-header"><div class="icon icon-verde">🗓️</div><h2>Editar Cronograma de Entrega</h2></div>
+        <div class="presentes-wrap">
+          ${cronogramaEditState.map((f,i) => `
+            <div class="programa-dyn-row">
+              <input id="cronog-evento-${i}" placeholder="Ciclo (ej: Mensual Marzo)" value="${escapeHtml(f.evento||'')}">
+              <input id="cronog-fecha-${i}" type="date" value="${f.fecha||''}">
+              <button class="btn-quitar-fila" onclick="quitarFilaCronograma(${i})">✕</button>
+            </div>`).join('')}
+          <button class="btn-agregar-fila" onclick="agregarFilaCronograma()">+ Agregar fila</button>
+          <div class="form-row" style="margin-top:12px;">
+            <button class="btn-presentes-accion" onclick="guardarCronograma()">💾 Guardar cronograma</button>
+            <button class="btn-presentes-accion" style="background:#aaa" onclick="cronogramaEditState=null; window.renderCronogramaAdmin();">Cancelar</button>
+          </div>
+        </div>
+      </div>`;
+  };
 
   // ============ ACCESO UI (login gate compartido por Programa y Permisos) ============
   window.renderAccesoUI = () => {
@@ -1057,7 +1290,9 @@
               ${a.fijo ? '<span class="perm-locked-intra">Fijo</span>' : `<span><button class="btn-presentes-accion" style="background:var(--rojo)" onclick="quitarAdmin('${a.email}')">Quitar admin</button></span>`}
             </div>`).join('')}
         </div>
-      </div>`;
+      </div>
+      <div id="cronograma-admin-wrap"></div>`;
+    window.renderCronogramaAdmin();
   };
   window.confirmarNuevoPermiso = async (comoAdmin) => {
     const email = document.getElementById('nuevo-permiso-email').value.trim();
@@ -1626,6 +1861,30 @@
   .pdf-promesa-tag { background: #fff3cd; color: #8a6d00; border-radius: 3px; padding: 1px 7px; font-size: 11px; font-weight: 700; }
   .pdf-footer { position: absolute; bottom: 20px; right: 40px; font-size: 11px; color: #666; }
 
+  /* Ceremonia (Programa) */
+  .ceremonia-extra { background: #fff8ea; border: 1px solid #f0dca0; border-radius: 8px; padding: 10px 12px; margin-top: 8px; }
+  .persona-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .persona-chip { background: white; border: 1px solid var(--crema); border-radius: 20px; padding: 4px 6px 4px 12px; font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }
+  .persona-chip button { background: none; border: none; color: var(--rojo); cursor: pointer; font-weight: 700; }
+  .persona-buscador { position: relative; }
+  .persona-resultados { position: absolute; z-index: 20; background: white; border: 1px solid var(--crema); border-radius: 8px; width: 100%; margin-top: 4px; max-height: 180px; overflow-y: auto; box-shadow: var(--shadow); display: none; }
+  .persona-resultado-item { padding: 8px 12px; font-size: 13px; cursor: pointer; display: flex; justify-content: space-between; }
+  .persona-resultado-item:hover { background: var(--fondo-cl); }
+  .persona-resultado-item span { font-size: 11px; color: var(--text-sec); }
+  .persona-resultado-vacio { padding: 8px 12px; font-size: 12px; color: var(--text-sec); font-style: italic; }
+
+  /* Próximas ceremonias (Inicio) */
+  .ceremonia-proxima-item { display: flex; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--fondo); }
+  .ceremonia-proxima-item:last-child { border-bottom: none; }
+  .ceremonia-proxima-fecha { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--azul-med); font-weight: 700; white-space: nowrap; background: var(--azul-cl); padding: 4px 8px; border-radius: 6px; text-transform: capitalize; }
+  .ceremonia-proxima-info { font-size: 13px; }
+  .ceremonia-proxima-info span { color: var(--text-sec); font-size: 11.5px; }
+
+  /* Cronograma de entregas */
+  .cronograma-tabla { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .cronograma-tabla th { background: var(--azul-cl); color: var(--azul); text-align: left; padding: 8px 10px; }
+  .cronograma-tabla td { padding: 7px 10px; border-bottom: 1px solid var(--crema); }
+
   /* ---- FOOTER ---- */
   footer {
     text-align: center; padding: 20px; font-size: 12px;
@@ -1695,6 +1954,8 @@
 
   <!-- =================== INICIO =================== -->
   <div class="tab-panel active" id="tab-inicio">
+
+    <div id="proximas-ceremonias-wrap"></div>
 
     <div class="inicio-layout">
       <div class="inicio-principal">
@@ -1926,6 +2187,7 @@
   <div class="tab-panel" id="tab-programa">
     <div id="programa-login-gate"></div>
     <div id="programa-app" style="display:none;">
+      <div id="cronograma-entregas-wrap"></div>
       <div class="card">
         <div class="card-header"><div class="icon icon-azul">📋</div><h2>Programa Mensual por Rama</h2></div>
         <div class="presentes-wrap">
