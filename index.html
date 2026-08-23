@@ -210,6 +210,13 @@
     }
   };
 
+  // Marca en la Intranet que este joven ya está sincronizado con el Portal de Jóvenes,
+  // para que "Precargar todos" no lo vuelva a tocar innecesariamente la próxima vez.
+  window.marcarJovenSincronizado = async (jovenId) => {
+    try { await updateDoc(doc(db, "jovenes", jovenId), { portalSincronizado: true, portalSincronizadoEn: Date.now() }); }
+    catch (e) { console.error('No se pudo marcar como sincronizado:', e); }
+  };
+
   // --- Cambiar / trasladar de rama (individual) ---
   window.cambiarRamaJoven = async (id, ramaActual, ramaNueva) => {
     const jRef = doc(db, "jovenes", id);
@@ -972,9 +979,9 @@
       f.filas.forEach(r => {
         if (r.esCeremonia) {
           const personasTexto = (r.personasCeremonia || []).map(x => x.nombre).join(', ');
-          const item = { nombre: r.nombre || 'Actividad', personas: personasTexto, personasArr: r.personasCeremonia || [], tipo: r.tipoCeremonia || 'Ceremonia', fecha: f.fecha, hora: r.hora || '' };
+          const item = { nombre: r.nombre || 'Actividad', personas: personasTexto, personasArr: r.personasCeremonia || [], tipo: r.tipoCeremonia || 'Ceremonia', fecha: f.fecha, hora: r.hora || '', _fila: r };
           todasCeremonias.push(item);
-          if (!r.promesaNotificada) { ceremoniasNuevas.push(item); r.promesaNotificada = true; }
+          if (!r.promesaNotificada) ceremoniasNuevas.push(item); // OJO: todavía NO se marca acá — se marca solo si el mail se manda bien
         }
       });
     });
@@ -994,7 +1001,7 @@
       // Mirror público de próximas ceremonias, para el cuadro del Inicio (que no pide login)
       try {
         const hoyISO = new Date().toISOString().slice(0,10);
-        const proximas = todasCeremonias.filter(c => c.fecha && c.fecha >= hoyISO).map(c => ({ ...c, rama: p.rama }));
+        const proximas = todasCeremonias.filter(c => c.fecha && c.fecha >= hoyISO).map(c => ({ nombre: c.nombre, personas: c.personas, tipo: c.tipo, fecha: c.fecha, hora: c.hora, rama: p.rama }));
         const refMirror = doc(db, "config_publico", "proximas_ceremonias");
         if (proximas.length > 0) await setDoc(refMirror, { [progId]: proximas }, { merge: true });
         else await updateDoc(refMirror, { [progId]: deleteField() }).catch(() => {});
@@ -1003,10 +1010,15 @@
       let msg = '✅ Programa guardado.';
       if (ceremoniasNuevas.length > 0) {
         const resultado = await enviarAlertaCeremoniaPrograma(p.rama, ceremoniasNuevas);
-        if (resultado.enviado) msg += ` Se avisó a todos los jefes de rama sobre ${ceremoniasNuevas.length} ceremonia(s).`;
-        else if (resultado.motivo === 'sin-jefes') msg += ` (Hay ${ceremoniasNuevas.length} ceremonia(s), pero todavía no hay ningún jefe de rama cargado en Permisos, así que no se avisó por mail.)`;
-        else if (resultado.motivo === 'sin-emailjs') msg += ' (El envío de mail todavía no está configurado.)';
-        else msg += ' (Hubo un error enviando el mail: ' + (resultado.error || '') + ')';
+        if (resultado.enviado) {
+          // Recién ACÁ se marca como notificado, y se persiste — así si falla, la próxima vez se reintenta solo.
+          ceremoniasNuevas.forEach(c => { c._fila.promesaNotificada = true; });
+          await updateDoc(doc(db, "programas", progId), { fechas: datos.fechas });
+          msg += ` Se avisó a todos los jefes de rama sobre ${ceremoniasNuevas.length} ceremonia(s).`;
+        }
+        else if (resultado.motivo === 'sin-jefes') msg += ` (Hay ${ceremoniasNuevas.length} ceremonia(s), pero todavía no hay ningún jefe de rama cargado en Permisos, así que no se avisó por mail. Se va a reintentar la próxima vez que guardes.)`;
+        else if (resultado.motivo === 'sin-emailjs') msg += ' (El envío de mail todavía no está configurado. Se va a reintentar la próxima vez que guardes.)';
+        else msg += ' (Hubo un error enviando el mail: ' + (resultado.error || '') + '. Se va a reintentar la próxima vez que guardes.)';
       }
 
       // Reflejar el 100% en el Portal de Jóvenes para cada ceremonia nueva con personas con email
@@ -1214,26 +1226,50 @@
   }
 
   // ============ PRÓXIMAS CEREMONIAS (cuadro público en Inicio, sin login) ============
+  let proximasCeremoniasCache = {};
   onSnapshot(doc(db, "config_publico", "proximas_ceremonias"), d => {
-    const data = d.exists() ? d.data() : {};
-    const hoyISO = new Date().toISOString().slice(0,10);
-    const todas = Object.values(data).flat().filter(c => c && c.fecha && c.fecha >= hoyISO);
-    todas.sort((a,b) => (a.fecha + (a.hora||'')).localeCompare(b.fecha + (b.hora||'')));
+    proximasCeremoniasCache = d.exists() ? d.data() : {};
+    renderProximasCeremonias();
+  });
+  function renderProximasCeremonias() {
     const wrap = document.getElementById('proximas-ceremonias-wrap');
     if (!wrap) return;
+    const hoyISO = new Date().toISOString().slice(0,10);
+    let todas = [];
+    Object.entries(proximasCeremoniasCache).forEach(([progId, arr]) => {
+      (arr || []).forEach((c, idx) => { if (c && c.fecha && c.fecha >= hoyISO) todas.push({ ...c, _progId: progId, _idx: idx }); });
+    });
+    todas.sort((a,b) => (a.fecha + (a.hora||'')).localeCompare(b.fecha + (b.hora||'')));
     if (todas.length === 0) { wrap.innerHTML = ''; return; }
     wrap.innerHTML = `
       <div class="card">
         <div class="card-header"><div class="icon icon-amari">🎗️</div><h2>Próximas Ceremonias</h2></div>
         <div class="presentes-wrap">
-          ${todas.slice(0, 8).map(c => `
+          ${todas.slice(0, 8).map(c => {
+            const puedeEliminar = sesionEsAdmin || misRamas.includes(c.rama);
+            return `
             <div class="ceremonia-proxima-item">
               <div class="ceremonia-proxima-fecha">${fmtFechaCorta(c.fecha)}${c.hora ? ' · ' + c.hora + 'hs' : ''}</div>
               <div class="ceremonia-proxima-info"><strong>${escapeHtml(c.tipo || 'Ceremonia')}</strong> — ${escapeHtml(c.personas || c.nombre || '')} <span>(${escapeHtml(c.rama||'')})</span></div>
-            </div>`).join('')}
+              ${puedeEliminar ? `<button class="ceremonia-proxima-del" title="Eliminar" onclick="eliminarCeremoniaProxima('${c._progId}',${c._idx},'${c.rama}')">🗑️</button>` : ''}
+            </div>`;
+          }).join('')}
         </div>
       </div>`;
-  });
+  }
+  window.eliminarCeremoniaProxima = async (progId, idx, rama) => {
+    if (!sesionEsAdmin && !misRamas.includes(rama)) { alert('Solo un administrador, o un dirigente de la rama ' + rama + ', puede eliminar esta ceremonia.'); return; }
+    if (!confirm('¿Eliminar este recordatorio de ceremonia del Inicio? (esto no borra la actividad del Programa, solo el aviso.)')) return;
+    try {
+      const ref = doc(db, "config_publico", "proximas_ceremonias");
+      const snap = await getDoc(ref);
+      if (!snap.exists()) return;
+      const data = snap.data();
+      const arr = [...(data[progId] || [])];
+      arr.splice(idx, 1);
+      await updateDoc(ref, { [progId]: arr });
+    } catch (err) { alert('⚠️ No se pudo eliminar: ' + err.message); }
+  };
   function fmtFechaCorta(iso) {
     if (!iso) return '';
     const d = new Date(iso + 'T00:00:00');
@@ -1362,6 +1398,7 @@
   window.renderAccesoUI = () => {
     actualizarNavPermisos();
     renderPerfilChip();
+    renderProximasCeremonias();
     ['programa', 'permisos'].forEach(tab => {
       const gate = document.getElementById(`${tab}-login-gate`);
       const appDiv = document.getElementById(`${tab}-app`);
@@ -1980,6 +2017,7 @@
     padding: 5px 9px; font-size: 11px; cursor: pointer;
   }
   .sin-email-tag { color: #e65100; font-weight: 700; font-size: 11px; }
+  .ya-en-portal-tag { color: #2e7d32; font-weight: 700; font-size: 11px; }
   .cumple-banner {
     background: var(--amarillo-cl); border-left: 3px solid var(--amarillo);
     border-radius: 8px; padding: 10px 14px; margin-bottom: 14px; font-size: 12px;
@@ -2112,6 +2150,7 @@
 
   /* Próximas ceremonias (Inicio) */
   .ceremonia-proxima-item { display: flex; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--fondo); }
+  .ceremonia-proxima-del { background: none; border: none; color: var(--rojo); font-size: 15px; cursor: pointer; padding: 4px 6px; flex-shrink: 0; }
   .ceremonia-proxima-item:last-child { border-bottom: none; }
   .ceremonia-proxima-fecha { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--azul-med); font-weight: 700; white-space: nowrap; background: var(--azul-cl); padding: 4px 8px; border-radius: 6px; text-transform: capitalize; }
   .ceremonia-proxima-info { font-size: 13px; }
@@ -2424,11 +2463,20 @@
               <option value="Caminantes">🥾 Caminantes</option>
               <option value="Rovers">⚓ Rovers</option>
             </select>
-            <input type="date" id="metricas-desde-input" onchange="cargarMetricas()">
-            <input type="date" id="metricas-hasta-input" onchange="cargarMetricas()">
+            <select id="metricas-mes-select" onchange="aplicarMesMetricas()">
+              <option value="">-- Elegir mes rápido --</option>
+              <option value="0">Enero</option><option value="1">Febrero</option><option value="2">Marzo</option>
+              <option value="3">Abril</option><option value="4">Mayo</option><option value="5">Junio</option>
+              <option value="6">Julio</option><option value="7">Agosto</option><option value="8">Septiembre</option>
+              <option value="9">Octubre</option><option value="10">Noviembre</option><option value="11">Diciembre</option>
+            </select>
+            <input type="date" id="metricas-desde-input" onchange="document.getElementById('metricas-mes-select').value=''; cargarMetricas()">
+            <input type="date" id="metricas-hasta-input" onchange="document.getElementById('metricas-mes-select').value=''; cargarMetricas()">
           </div>
           <canvas id="grafico-presentismo" height="220"></canvas>
           <div id="metricas-resumen"></div>
+          <button class="btn-presentes-accion" style="margin-top:12px" onclick="cargarDetalleMetricas()">📋 Ver detalle de presentes y ausentes</button>
+          <div id="metricas-detalle" style="margin-top:12px"></div>
         </div>
 
       </div>
@@ -2526,7 +2574,7 @@
         <div class="info">
           <strong>${j.nombre} ${j.apellido}</strong>
           <span>${j.rama} · ${window.calcularEdad(j.fechaNacimiento) ?? "—"} años · nació ${j.fechaNacimiento || "—"}</span>
-          <span>${j.email ? `📱 ${escapeHtml(j.email)}` : '<span class="sin-email-tag">⚠️ Sin email — no tiene cuenta en el Portal</span>'}</span>
+          <span>${j.email ? `📱 ${escapeHtml(j.email)}` : '<span class="sin-email-tag">⚠️ Sin email — no tiene cuenta en el Portal</span>'} ${j.portalSincronizado ? '<span class="ya-en-portal-tag">✅ En el Portal</span>' : ''}</span>
         </div>
         <div class="joven-card-acciones">
           <button onclick='abrirFormJoven(${JSON.stringify(j).replace(/'/g,"&apos;")})'>✏️ Editar</button>
@@ -2546,20 +2594,25 @@
       }
       const todos = window.jovenesCache || [];
       if (todos.length === 0) { alert('No hay jóvenes cargados en esta vista todavía (revisá el filtro de rama de arriba).'); return; }
-      const conEmail = todos.filter(j => j.email).length;
-      const sinEmail = todos.length - conEmail;
-      if (!confirm(`Se va a precargar en el Portal de Jóvenes a los ${todos.length} joven(es) de esta lista: ${conEmail} con acceso real (ya tienen email) y ${sinEmail} como perfil pendiente (sin login todavía, hasta que le agregues el mail). ¿Continuar?`)) return;
+      const pendientes = todos.filter(j => !j.portalSincronizado);
+      const yaHechos = todos.length - pendientes.length;
+      if (pendientes.length === 0) { alert(`Los ${todos.length} joven(es) de esta lista ya estaban precargados en el Portal — no hay nada nuevo para sincronizar.`); return; }
+      const conEmail = pendientes.filter(j => j.email).length;
+      const sinEmail = pendientes.length - conEmail;
+      if (!confirm(`Se va a precargar en el Portal de Jóvenes a ${pendientes.length} joven(es) nuevo(s) de esta lista: ${conEmail} con acceso real (ya tienen email) y ${sinEmail} como perfil pendiente.${yaHechos ? ` (${yaHechos} ya estaban precargados y se saltean.)` : ''} ¿Continuar?`)) return;
 
       let okConAcceso = 0, okPendiente = 0, error = 0;
-      for (const j of todos) {
+      for (const j of pendientes) {
         const nombreCompleto = `${j.nombre} ${j.apellido}`;
         const resultado = j.email
           ? await preautorizarEnPortalJovenes(j.email, nombreCompleto, j.rama)
           : await crearPerfilPendienteEnPortal(j.id, nombreCompleto, j.rama);
-        if (resultado.ok) { if (j.email) okConAcceso++; else okPendiente++; }
-        else error++;
+        if (resultado.ok) {
+          if (j.email) okConAcceso++; else okPendiente++;
+          await window.marcarJovenSincronizado(j.id);
+        } else error++;
       }
-      alert(`✅ Listo. ${okConAcceso} con acceso real y ${okPendiente} como perfil pendiente en el Portal de Jóvenes.${error ? ` ${error} fallaron.` : ''}`);
+      alert(`✅ Listo. ${okConAcceso} con acceso real y ${okPendiente} como perfil pendiente en el Portal de Jóvenes.${error ? ` ${error} fallaron.` : ''}${yaHechos ? ` ${yaHechos} ya estaban precargados y se saltearon.` : ''}`);
     } catch (err) {
       console.error('Error en precargarTodosEnPortal:', err);
       alert('⚠️ Ocurrió un error inesperado: ' + err.message);
@@ -2636,7 +2689,8 @@
       const resultado = datos.email
         ? await window.preautorizarEnPortalJovenes(datos.email, nombreCompleto, ramaFinal)
         : await window.crearPerfilPendienteEnPortal(jovenId, nombreCompleto, ramaFinal);
-      if (!resultado.ok) console.warn('No se pudo sincronizar con el Portal de Jóvenes:', resultado.motivo);
+      if (resultado.ok) await window.marcarJovenSincronizado(jovenId);
+      else console.warn('No se pudo sincronizar con el Portal de Jóvenes:', resultado.motivo);
     }
     document.getElementById('form-joven-wrap').innerHTML = '';
   };
@@ -2827,6 +2881,62 @@
       <div class="info-resumen">
         <strong>Resumen del período:</strong> ${totalReuniones} reunión(es) con asistencia registrada · promedio de ${promedio} presentes por reunión.
       </div>`;
+  };
+
+  window.aplicarMesMetricas = () => {
+    const mesSel = document.getElementById('metricas-mes-select').value;
+    if (mesSel === '') return;
+    const anio = new Date().getFullYear();
+    const mes = parseInt(mesSel, 10);
+    const desde = new Date(anio, mes, 1);
+    const hasta = new Date(anio, mes + 1, 0);
+    document.getElementById('metricas-desde-input').value = desde.toISOString().slice(0,10);
+    document.getElementById('metricas-hasta-input').value = hasta.toISOString().slice(0,10);
+    window.cargarMetricas();
+  };
+
+  window.cargarDetalleMetricas = async () => {
+    const rama = document.getElementById('metricas-rama-select').value;
+    const desde = document.getElementById('metricas-desde-input').value;
+    const hasta = document.getElementById('metricas-hasta-input').value;
+    const wrap = document.getElementById('metricas-detalle');
+    if (!desde || !hasta) { wrap.innerHTML = `<p class="presentes-empty">Elegí un rango de fechas (o un mes rápido) arriba primero.</p>`; return; }
+    wrap.innerHTML = `<p class="presentes-empty">Cargando detalle...</p>`;
+
+    const datos = await window.obtenerAsistenciasRango(rama, desde, hasta);
+    if (datos.length === 0) { wrap.innerHTML = `<p class="presentes-empty">No hay asistencia registrada en este período${rama ? ' para ' + rama : ''}.</p>`; return; }
+
+    // Agrupamos por fecha, y dentro de cada fecha por rama (por si el filtro es "Todas las ramas")
+    const porFecha = {};
+    datos.forEach(d => {
+      if (!porFecha[d.fecha]) porFecha[d.fecha] = {};
+      const r = d.rama || 'Sin rama';
+      if (!porFecha[d.fecha][r]) porFecha[d.fecha][r] = { presentes: [], ausentes: [] };
+      (d.presente ? porFecha[d.fecha][r].presentes : porFecha[d.fecha][r].ausentes).push(d.jovenNombre || '(sin nombre)');
+    });
+
+    const fechasOrdenadas = Object.keys(porFecha).sort().reverse();
+    wrap.innerHTML = fechasOrdenadas.map(f => {
+      const fechaFmt = new Date(f + 'T00:00:00').toLocaleDateString('es-AR', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' });
+      const porRamaEseDia = porFecha[f];
+      return Object.keys(porRamaEseDia).map(r => {
+        const g = porRamaEseDia[r];
+        return `
+        <div class="info-card" style="margin-bottom:10px;">
+          <h4 style="text-transform:capitalize">${fechaFmt} · ${escapeHtml(r)}</h4>
+          <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px">
+            <div style="flex:1;min-width:150px">
+              <strong style="color:#2e7d32;font-size:12px">✅ Presentes (${g.presentes.length})</strong>
+              <p style="font-size:12.5px;margin-top:4px;line-height:1.5">${g.presentes.length ? g.presentes.join(', ') : '—'}</p>
+            </div>
+            <div style="flex:1;min-width:150px">
+              <strong style="color:#b01a1a;font-size:12px">❌ Ausentes (${g.ausentes.length})</strong>
+              <p style="font-size:12.5px;margin-top:4px;line-height:1.5">${g.ausentes.length ? g.ausentes.join(', ') : '—'}</p>
+            </div>
+          </div>
+        </div>`;
+      }).join('');
+    }).join('');
   };
 
   function escapeHtml(s) {
