@@ -20,6 +20,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
@@ -636,6 +638,7 @@
       }
       if (programaState.tituloObjetivoCiclo === undefined) programaState.tituloObjetivoCiclo = 'Objetivo Trimestral';
       if (programaState.objetivoCiclo === undefined) programaState.objetivoCiclo = '';
+      if (programaState.esCampamento === undefined) programaState.esCampamento = false;
       programaState.fechas.forEach(f => {
         if (f.marcoCuento === undefined) f.marcoCuento = '';
         f.filas.forEach(r => {
@@ -655,7 +658,7 @@
       const hoy = new Date();
       programaState = {
         editId: null, rama: (sesionEsAdmin || misRamas.length === 0) ? 'Manada' : misRamas[0], mes: MESES_PROGRAMA[hoy.getMonth()], anio: hoy.getFullYear(),
-        tituloDocumento: `- Manada Mohwa -`, planificacion: 'Mensual',
+        tituloDocumento: `- Manada Mohwa -`, planificacion: 'Mensual', esCampamento: false,
         jefatura: [{ rol: '', nombre: '' }],
         lema: '', marcoSimbolico: '',
         tituloDiagnostico: 'Diagnóstico de la Rama', diagnostico: '',
@@ -682,6 +685,7 @@
     programaState.anio = parseInt(g('pf-anio').value, 10) || programaState.anio;
     programaState.tituloDocumento = g('pf-titulo').value;
     programaState.planificacion = g('pf-planificacion').value;
+    programaState.esCampamento = g('pf-escampamento')?.checked || false;
     programaState.lema = g('pf-lema').value;
     programaState.marcoSimbolico = g('pf-marco').value;
     programaState.tituloDiagnostico = g('pf-titulodiag').value || 'Diagnóstico de la Rama';
@@ -783,6 +787,7 @@
         <input id="pf-titulo" value="${escapeHtml(p.tituloDocumento)}">
         <label style="font-size:11px; color:var(--text-sec); display:block; margin:8px 0 3px;">Planificación</label>
         <input id="pf-planificacion" value="${escapeHtml(p.planificacion)}">
+        <label class="campamento-check"><input id="pf-escampamento" type="checkbox" ${p.esCampamento?'checked':''}> 🏕️ Programa de Campamento</label>
       </div>
 
       <div class="programa-form-section">
@@ -1048,10 +1053,11 @@
     wrap.innerHTML = window.programasCache.map(pr => {
       const puedeEditar = sesionEsAdmin || misRamas.includes(pr.rama);
       return `
-      <div class="programa-lista-item">
-        <div><strong>${escapeHtml(pr.rama)} — ${escapeHtml(pr.mes)} ${pr.anio}</strong><span>${escapeHtml(pr.tituloDocumento||'')}</span>${!puedeEditar ? '<span class="solo-lectura-tag">👁️ Solo lectura</span>' : ''}</div>
+      <div class="programa-lista-item ${pr.esCampamento ? 'programa-campamento' : ''}">
+        <div><strong>${escapeHtml(pr.rama)} — ${escapeHtml(pr.mes)} ${pr.anio}</strong>${pr.esCampamento ? '<span class="campamento-badge">🏕️ CAMPAMENTO</span>' : ''}<span>${escapeHtml(pr.tituloDocumento||'')}</span>${!puedeEditar ? '<span class="solo-lectura-tag">👁️ Solo lectura</span>' : ''}</div>
         <div class="joven-card-acciones">
           <button onclick="descargarProgramaPDF('${pr.id}')">📄 PDF</button>
+          <button onclick="descargarProgramaWord('${pr.id}')">📝 Word</button>
           ${puedeEditar ? `
           <button onclick="editarProgramaExistente('${pr.id}')">✏️ Editar</button>
           <button onclick="duplicarProgramaExistente('${pr.id}')">📋 Duplicar (mes siguiente)</button>
@@ -1167,6 +1173,7 @@
 
     let front = '';
     front += `<div class="pdf-title">${escapeHtml(p.tituloDocumento)}</div>`;
+    if (p.esCampamento) front += `<div class="pdf-campamento-banner">🏕️ PROGRAMA DE CAMPAMENTO</div>`;
     if (p.jefatura.some(j => j.nombre || j.rol)) {
       front += `<div class="pdf-section-title">Jefatura:</div><ul class="pdf-list">${p.jefatura.filter(j => j.nombre || j.rol).map(j => `<li>${escapeHtml(j.nombre)}${j.rol ? ' (' + escapeHtml(j.rol) + ')' : ''}</li>`).join('')}</ul>`;
     }
@@ -1222,6 +1229,288 @@
       alert('⚠️ Error generando el PDF: ' + err.message);
     } finally {
       cont.innerHTML = '';
+    }
+  }
+
+  // ============ CARGA MASIVA DESDE PDF ============
+  if (window.pdfjsLib) {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  }
+
+  async function extraerTextoPDF(arrayBuffer) {
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    let lineas = [];
+    for (let p = 1; p <= pdf.numPages; p++) {
+      const page = await pdf.getPage(p);
+      const content = await page.getTextContent();
+      const porY = {};
+      content.items.forEach(item => {
+        const y = Math.round(item.transform[5]);
+        if (!porY[y]) porY[y] = [];
+        porY[y].push(item.str);
+      });
+      const ysOrdenados = Object.keys(porY).map(Number).sort((a, b) => b - a);
+      ysOrdenados.forEach(y => lineas.push(porY[y].join(' ')));
+    }
+    return lineas.join('\n');
+  }
+
+  const CAMPO_MAP_PDF = {
+    'nombre': 'nombre', 'áreas de desarrollo': 'areasDesarrollo', 'areas de desarrollo': 'areasDesarrollo',
+    'ubicación': 'ubicacion', 'ubicacion': 'ubicacion', 'recursos': 'recursos',
+    'dinámica y desarrollo': 'dinamica', 'dinamica y desarrollo': 'dinamica', 'dinámica y desarrollo ': 'dinamica',
+    'encargado': 'encargado', 'duración': 'duracion', 'duracion': 'duracion'
+  };
+
+  function parsearTextoPrograma(textoCompleto) {
+    const lineasRaw = textoCompleto.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+    const hoy = new Date();
+    const resultado = {
+      editId: null, rama: 'Manada', mes: MESES_PROGRAMA[hoy.getMonth()], anio: hoy.getFullYear(),
+      tituloDocumento: '', planificacion: 'Mensual',
+      jefatura: [], lema: '', marcoSimbolico: '',
+      tituloDiagnostico: 'Diagnóstico de la Rama', diagnostico: '',
+      tituloObjetivoCiclo: 'Objetivo Trimestral', objetivoCiclo: '',
+      metaAnual: [], objetivosMes: [], metasMes: [],
+      fechas: []
+    };
+
+    const textoLower = textoCompleto.toLowerCase();
+    const ramaDetectada = ['Castores','Manada','Scouts','Caminantes','Rovers'].find(r => textoLower.includes(r.toLowerCase()));
+    if (ramaDetectada) resultado.rama = ramaDetectada;
+
+    const lineaTitulo = lineasRaw.find(l => /^-\s*.+\s*-$/.test(l));
+    if (lineaTitulo) resultado.tituloDocumento = lineaTitulo;
+
+    const lineaAnioMes = lineasRaw.find(l => /Año\s*:/i.test(l));
+    if (lineaAnioMes) {
+      const mAnio = lineaAnioMes.match(/Año\s*:\s*(\d{4})/i);
+      const mMes = lineaAnioMes.match(/Mes\s*:\s*([A-Za-zÁÉÍÓÚáéíóúñÑ]+)/i);
+      if (mAnio) resultado.anio = parseInt(mAnio[1], 10);
+      if (mMes) {
+        const encontrado = MESES_PROGRAMA.find(m => m.toLowerCase() === mMes[1].trim().toLowerCase());
+        if (encontrado) resultado.mes = encontrado;
+      }
+    }
+
+    const idxJefatura = lineasRaw.findIndex(l => /^Jefatura\s*:?$/i.test(l));
+    if (idxJefatura >= 0) {
+      let j = idxJefatura + 1;
+      while (j < lineasRaw.length && /^[-•●]\s*/.test(lineasRaw[j])) {
+        const texto = lineasRaw[j].replace(/^[-•●]\s*/, '');
+        const m = texto.match(/^(.+?)\s*\((.+?)\)\s*$/);
+        if (m) resultado.jefatura.push({ nombre: m[1].trim(), rol: m[2].trim() });
+        else resultado.jefatura.push({ nombre: texto.trim(), rol: '' });
+        j++;
+      }
+    }
+
+    const lineaLema = lineasRaw.find(l => /Lema\s*:/i.test(l));
+    if (lineaLema) resultado.lema = lineaLema.replace(/^[●•\-]?\s*Lema\s*:\s*/i, '').trim();
+    const lineaMarco = lineasRaw.find(l => /Marco Simbólico\s*:/i.test(l) && !/Cuentos de la Selva/i.test(l));
+    if (lineaMarco) resultado.marcoSimbolico = lineaMarco.replace(/^[●•\-]?\s*Marco Simbólico\s*:\s*/i, '').trim();
+
+    const idxObjYLin = lineasRaw.findIndex(l => /^Objetivos y Lineamientos$/i.test(l));
+    if (idxObjYLin > 0) {
+      let k = idxObjYLin - 1;
+      let parrafo = [];
+      while (k >= 0 && !/^Año\s*:/i.test(lineasRaw[k]) && !/^Jefatura/i.test(lineasRaw[k]) && parrafo.length < 15) {
+        parrafo.unshift(lineasRaw[k]);
+        k--;
+      }
+      if (parrafo.length > 0) {
+        resultado.tituloDiagnostico = parrafo[0];
+        resultado.diagnostico = parrafo.slice(1).join(' ');
+      }
+    }
+
+    const idxObjTrim = lineasRaw.findIndex(l => /^Objetivo\s+.+:/i.test(l) && !/Objetivo por mes/i.test(l) && !/Objetivos y Lineamientos/i.test(l));
+    if (idxObjTrim >= 0) {
+      const m = lineasRaw[idxObjTrim].match(/^(.+?):\s*(.*)$/);
+      if (m) {
+        resultado.tituloObjetivoCiclo = m[1].trim();
+        let contenido = [m[2]];
+        let k = idxObjTrim + 1;
+        while (k < lineasRaw.length && !/^Meta Anual/i.test(lineasRaw[k]) && !/^Desarrollo de Actividades/i.test(lineasRaw[k]) && !/^Objetivo por mes/i.test(lineasRaw[k])) {
+          contenido.push(lineasRaw[k]); k++;
+        }
+        resultado.objetivoCiclo = contenido.join(' ').trim();
+      }
+    }
+
+    const idxMetaAnual = lineasRaw.findIndex(l => /^Meta Anual\s*:?$/i.test(l));
+    if (idxMetaAnual >= 0) {
+      let k = idxMetaAnual + 1;
+      while (k < lineasRaw.length && !/^Objetivo/i.test(lineasRaw[k]) && !/^Desarrollo de Actividades/i.test(lineasRaw[k])) {
+        if (/^[●•\-]/.test(lineasRaw[k])) {
+          const texto = lineasRaw[k].replace(/^[●•\-]\s*/, '');
+          const m = texto.match(/^(.+?):\s*(.*)$/);
+          if (m) resultado.metaAnual.push({ titulo: m[1].trim(), texto: m[2].trim() });
+          else resultado.metaAnual.push({ titulo: '', texto });
+        }
+        k++;
+      }
+    }
+
+    const idxDesarrollo = lineasRaw.findIndex(l => /^Desarrollo de Actividades/i.test(l));
+    if (idxDesarrollo >= 0) {
+      let k = idxDesarrollo + 1;
+      let fechaActual = null, filaActual = null, campoActualKey = null;
+      const REGEX_FECHA = /^Fecha\s*:\s*(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/i;
+      const REGEX_MARCO_FECHA = /^Marco Simbólico\s*\/?\s*Cuentos de la Selva\s*:\s*(.*)$/i;
+      const REGEX_ACTIVIDAD = /^[●•\*]\s*(\d{1,2})\s*[:\.]?\s*(\d{2})?\s*hs?\.?\s*[—\-–]?\s*(.*)$/i;
+      const REGEX_CAMPO = /^[○o]\s*([^:]+?)\s*:\s*(.*)$/;
+
+      function cerrarFila() { if (filaActual && fechaActual) fechaActual.filas.push(filaActual); filaActual = null; campoActualKey = null; }
+      function cerrarFecha() { cerrarFila(); if (fechaActual) resultado.fechas.push(fechaActual); fechaActual = null; }
+
+      while (k < lineasRaw.length) {
+        const linea = lineasRaw[k];
+        let m;
+        if ((m = linea.match(REGEX_FECHA))) {
+          cerrarFecha();
+          const anioCompleto = m[3].length === 2 ? '20' + m[3] : m[3];
+          fechaActual = { fecha: `${anioCompleto}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`, marcoCuento: '', filas: [] };
+        } else if (fechaActual && (m = linea.match(REGEX_MARCO_FECHA))) {
+          fechaActual.marcoCuento = m[1].trim();
+        } else if (fechaActual && (m = linea.match(REGEX_ACTIVIDAD))) {
+          cerrarFila();
+          const hh = m[1].padStart(2, '0'), mm = (m[2] || '00').padStart(2, '0');
+          filaActual = nuevaActividadVacia();
+          filaActual.hora = `${hh}:${mm}`;
+          filaActual.nombre = (m[3] || '').trim();
+          campoActualKey = 'nombre';
+        } else if (filaActual && (m = linea.match(REGEX_CAMPO))) {
+          const key = CAMPO_MAP_PDF[m[1].trim().toLowerCase()];
+          if (key) { filaActual[key] = m[2].trim(); campoActualKey = key; }
+          else campoActualKey = null;
+        } else if (filaActual && campoActualKey && linea) {
+          filaActual[campoActualKey] = (filaActual[campoActualKey] ? filaActual[campoActualKey] + ' ' : '') + linea;
+        }
+        k++;
+      }
+      cerrarFecha();
+    }
+
+    if (resultado.fechas.length === 0) resultado.fechas.push({ fecha: '', marcoCuento: '', filas: [nuevaActividadVacia()] });
+    if (resultado.jefatura.length === 0) resultado.jefatura.push({ rol: '', nombre: '' });
+    if (resultado.metaAnual.length === 0) resultado.metaAnual.push({ titulo: '', texto: '' });
+    if (resultado.objetivosMes.length === 0) resultado.objetivosMes.push({ titulo: '', texto: '' });
+    if (resultado.metasMes.length === 0) resultado.metasMes.push({ titulo: '', texto: '' });
+    return resultado;
+  }
+
+  window.cargarProgramaDesdePDF = async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    try {
+      const buffer = await file.arrayBuffer();
+      const texto = await extraerTextoPDF(buffer);
+      const parseado = parsearTextoPrograma(texto);
+      programaState = parseado;
+      renderProgramaForm();
+      document.getElementById('programa-form-wrap').scrollIntoView({ behavior: 'smooth' });
+      const cantFechas = parseado.fechas.filter(f => f.fecha).length;
+      const cantAct = parseado.fechas.reduce((s, f) => s + f.filas.length, 0);
+      alert(`📄 PDF leído: se encontraron ${cantFechas} fecha(s) y ${cantAct} actividad(es). IMPORTANTE: revisá todos los campos antes de guardar — la lectura automática de PDF puede tener errores u omisiones, sobre todo en textos largos.`);
+    } catch (err) {
+      console.error('Error leyendo PDF:', err);
+      alert('⚠️ No se pudo leer el PDF: ' + err.message);
+    }
+    event.target.value = '';
+  };
+
+  // ============ EXPORTAR A WORD (.docx) ============
+  window.descargarProgramaWord = async (id) => {
+    const pr = window.programasCache.find(x => x.id === id);
+    if (pr) await generarProgramaWord(pr);
+  };
+
+  async function generarProgramaWord(p) {
+    if (!window.docx) { alert('No se pudo cargar el generador de Word. Probá de nuevo en un momento.'); return; }
+    try {
+      const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } = window.docx;
+      const campoParrafo = (label, valor) => new Paragraph({
+        children: [new TextRun({ text: '○ ' + label + ': ', bold: true }), new TextRun(valor)],
+        indent: { left: 360 }
+      });
+
+      const hijos = [];
+      hijos.push(new Paragraph({ text: p.tituloDocumento || `${p.rama} — ${p.mes} ${p.anio}`, heading: HeadingLevel.TITLE, alignment: AlignmentType.CENTER }));
+      if (p.esCampamento) {
+        hijos.push(new Paragraph({
+          alignment: AlignmentType.CENTER,
+          children: [new TextRun({ text: '🏕️ PROGRAMA DE CAMPAMENTO', bold: true, color: 'B01A1A', size: 28 })],
+          spacing: { before: 100, after: 200 }
+        }));
+      }
+
+      if (p.jefatura.some(j => j.nombre || j.rol)) {
+        hijos.push(new Paragraph({ text: 'Jefatura', heading: HeadingLevel.HEADING_2, spacing: { before: 200 } }));
+        p.jefatura.filter(j => j.nombre || j.rol).forEach(j => {
+          hijos.push(new Paragraph({ text: `${j.nombre}${j.rol ? ' (' + j.rol + ')' : ''}`, bullet: { level: 0 } }));
+        });
+      }
+
+      hijos.push(new Paragraph({ text: `Año: ${p.anio} | Mes: ${p.mes}`, alignment: AlignmentType.CENTER, spacing: { before: 200, after: 200 } }));
+
+      if (p.diagnostico) {
+        hijos.push(new Paragraph({ text: p.tituloDiagnostico || 'Diagnóstico de la Rama', heading: HeadingLevel.HEADING_2 }));
+        hijos.push(new Paragraph({ text: p.diagnostico }));
+      }
+      if (p.lema || p.marcoSimbolico) {
+        hijos.push(new Paragraph({ text: 'Objetivos y Lineamientos', heading: HeadingLevel.HEADING_2, spacing: { before: 200 } }));
+        if (p.lema) hijos.push(new Paragraph({ children: [new TextRun({ text: 'Lema: ', bold: true }), new TextRun(p.lema)] }));
+        if (p.marcoSimbolico) hijos.push(new Paragraph({ children: [new TextRun({ text: 'Marco Simbólico: ', bold: true }), new TextRun(p.marcoSimbolico)] }));
+      }
+      if (p.objetivoCiclo) {
+        hijos.push(new Paragraph({ children: [new TextRun({ text: (p.tituloObjetivoCiclo || 'Objetivo Trimestral') + ': ', bold: true }), new TextRun(p.objetivoCiclo)], spacing: { before: 150 } }));
+      }
+      const metaAnualLlena = p.metaAnual.filter(m => m.texto || m.titulo);
+      if (metaAnualLlena.length) {
+        hijos.push(new Paragraph({ text: 'Meta Anual', heading: HeadingLevel.HEADING_2, spacing: { before: 200 } }));
+        metaAnualLlena.forEach(m => hijos.push(new Paragraph({ children: [m.titulo ? new TextRun({ text: m.titulo + ': ', bold: true }) : new TextRun(''), new TextRun(m.texto)], bullet: { level: 0 } })));
+      }
+      const objMesLleno = p.objetivosMes.filter(o => o.texto || o.titulo);
+      if (objMesLleno.length) {
+        hijos.push(new Paragraph({ text: 'Objetivo por mes', heading: HeadingLevel.HEADING_2, spacing: { before: 200 } }));
+        objMesLleno.forEach(o => hijos.push(new Paragraph({ children: [o.titulo ? new TextRun({ text: o.titulo + ': ', bold: true }) : new TextRun(''), new TextRun('"' + o.texto + '"')], bullet: { level: 0 } })));
+      }
+      const metasMesLlena = p.metasMes.filter(m => m.texto || m.titulo);
+      if (metasMesLlena.length) {
+        hijos.push(new Paragraph({ text: 'Metas del mes', heading: HeadingLevel.HEADING_2, spacing: { before: 200 } }));
+        metasMesLlena.forEach(m => hijos.push(new Paragraph({ children: [m.titulo ? new TextRun({ text: m.titulo + ': ', bold: true }) : new TextRun(''), new TextRun(m.texto)], bullet: { level: 0 } })));
+      }
+
+      hijos.push(new Paragraph({ text: 'Desarrollo de Actividades', heading: HeadingLevel.HEADING_1, spacing: { before: 300 } }));
+      p.fechas.forEach(f => {
+        const fechaFmt = f.fecha ? f.fecha.split('-').reverse().join('/') : '';
+        hijos.push(new Paragraph({ children: [new TextRun({ text: 'Fecha: ', bold: true }), new TextRun(fechaFmt)], spacing: { before: 250 } }));
+        if (f.marcoCuento) hijos.push(new Paragraph({ children: [new TextRun({ text: 'Marco Simbólico / Cuentos de la Selva: ', bold: true }), new TextRun(f.marcoCuento)] }));
+        f.filas.forEach(r => {
+          const personas = (r.personasCeremonia || []).map(x => x.nombre).join(', ');
+          const headerLabel = r.esCeremonia ? `${r.tipoCeremonia || 'Ceremonia'}${personas ? ' de ' + personas : ''}` : (r.nombre || '');
+          hijos.push(new Paragraph({ children: [new TextRun({ text: `● ${r.hora || ''} hs — ${headerLabel}`, bold: true })], spacing: { before: 150 } }));
+          const nombreLinea = r.esCeremonia ? headerLabel : r.nombre;
+          if (nombreLinea) hijos.push(campoParrafo('Nombre', nombreLinea));
+          if (r.areasDesarrollo) hijos.push(campoParrafo('Áreas de Desarrollo', r.areasDesarrollo));
+          if (r.ubicacion) hijos.push(campoParrafo('Ubicación', r.ubicacion));
+          if (r.recursos) hijos.push(campoParrafo('Recursos', r.recursos));
+          if (r.dinamica) hijos.push(campoParrafo('Dinámica y Desarrollo', r.dinamica));
+          if (r.encargado) hijos.push(campoParrafo('Encargado', r.encargado));
+          if (r.duracion) hijos.push(campoParrafo('Duración', r.duracion));
+        });
+      });
+
+      const documento = new Document({ sections: [{ children: hijos }] });
+      const blob = await Packer.toBlob(documento);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = `Programa_${p.mes}_${p.rama}_${p.anio}.docx`;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert('⚠️ Error generando el Word: ' + err.message);
     }
   }
 
@@ -2092,6 +2381,10 @@
   }
   .programa-lista-item strong { font-size: 13px; }
   .programa-lista-item span { font-size: 11.5px; color: var(--text-sec); display: block; }
+  .programa-lista-item.programa-campamento { background: #fff3e0; border-color: #ffb74d; border-width: 2px; }
+  .campamento-badge { display: inline-block; margin-left: 8px; background: var(--rojo); color: white; font-size: 10px; font-weight: 800; padding: 2px 8px; border-radius: 10px; letter-spacing: 0.03em; }
+  .campamento-check { display: flex; align-items: center; gap: 6px; margin-top: 10px; background: #fff3e0; border: 1px solid #ffb74d; border-radius: 8px; padding: 8px 12px; font-size: 13px; font-weight: 700; color: #8a4b00; cursor: pointer; }
+  .campamento-check input { width: 16px; height: 16px; }
   .programa-form-section {
     background: var(--fondo-cl); border: 1px solid var(--crema); border-radius: var(--radius);
     padding: 16px; margin-bottom: 16px;
@@ -2125,6 +2418,7 @@
   .pdf-header .pdf-header-text .grupo { font-size: 13px; color: #444; }
   .pdf-header .pdf-header-text .rama-nombre { font-size: 20px; font-weight: 700; color: #1a3a6b; font-family: 'Playfair Display', serif; }
   .pdf-title { text-align: center; font-family: 'Playfair Display', serif; font-size: 24px; font-weight: 700; margin: 10px 0 18px; color: #1a3a6b; }
+  .pdf-campamento-banner { text-align: center; background: #fff3e0; border: 2px solid #b01a1a; color: #b01a1a; font-weight: 800; font-size: 15px; padding: 8px; border-radius: 6px; margin: -8px 0 18px; letter-spacing: 0.04em; }
   .pdf-section-title { font-weight: 700; text-decoration: underline; font-size: 14px; margin: 14px 0 8px; }
   .pdf-body-text { font-size: 13px; line-height: 1.6; margin-bottom: 6px; }
   .pdf-list { padding-left: 20px; }
@@ -2522,6 +2816,8 @@
         <div class="presentes-wrap">
           <div class="programa-toolbar">
             <button class="btn-presentes-accion" onclick="nuevoProgramaForm()">➕ Nuevo programa</button>
+            <button class="btn-presentes-accion" style="background:var(--rojo)" onclick="document.getElementById('pdf-programa-input').click()">📤 Cargar desde PDF</button>
+            <input type="file" id="pdf-programa-input" accept=".pdf" style="display:none" onchange="cargarProgramaDesdePDF(event)">
           </div>
           <div id="programa-form-wrap"></div>
           <div id="programa-lista-wrap"></div>
