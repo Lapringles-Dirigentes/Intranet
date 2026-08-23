@@ -212,6 +212,30 @@
     }
   };
 
+  // Actualiza la foto de perfil en el Portal de Jóvenes: si el chico ya inició sesión alguna
+  // vez ahí, actualiza su perfil REAL (buscándolo por email); si no, la deja en su perfil
+  // "pendiente" para que ya se vea entre el staff aunque todavía no tenga cuenta propia.
+  window.actualizarFotoEnPortal = async (email, jovenIntranetId, fotoBase64) => {
+    if (!scoutSesionOk) return { ok: false, motivo: 'sin-sesion-portal' };
+    try {
+      if (email) {
+        const q = query(collection(scoutDb, "perfiles"), where("email", "==", email));
+        const snap = await getDocs(q);
+        if (!snap.empty) {
+          await updateDoc(doc(scoutDb, "perfiles", snap.docs[0].id), { fotoPerfil: fotoBase64 });
+          return { ok: true, actualizoReal: true };
+        }
+      }
+      const perfilId = 'pendiente_' + jovenIntranetId;
+      const ref = doc(scoutDb, "perfiles", perfilId);
+      const pSnap = await getDoc(ref);
+      if (pSnap.exists()) { await updateDoc(ref, { fotoPerfil: fotoBase64 }); return { ok: true, actualizoReal: false }; }
+      return { ok: false, motivo: 'sin-perfil-todavia' };
+    } catch (err) {
+      return { ok: false, motivo: err.message };
+    }
+  };
+
   // Marca en la Intranet que este joven ya está sincronizado con el Portal de Jóvenes,
   // para que "Precargar todos" no lo vuelva a tocar innecesariamente la próxima vez.
   window.marcarJovenSincronizado = async (jovenId) => {
@@ -452,6 +476,24 @@
     return Array.from(set);
   }
 
+  // Mirror público (sin login) con TODOS los dirigentes autorizados + admins — hace falta
+  // porque las reglas de Firestore no dejan listar "autorizados" completo si no sos admin,
+  // y el recordatorio de 15 días necesita poder avisarle a cualquiera que abra la Intranet.
+  let todosDirigentesPublicoCache = [];
+  onSnapshot(doc(db, "config_publico", "todos_dirigentes"), d => {
+    todosDirigentesPublicoCache = d.exists() && d.data().emails ? d.data().emails : [];
+  });
+  function todosLosDirigentesYAdmins() {
+    const set = new Set(todosDirigentesPublicoCache);
+    ADMINS_FIJOS.forEach(e => set.add(e));
+    administradoresCache.forEach(a => set.add(a.email));
+    return Array.from(set);
+  }
+  async function sumarATodosDirigentesMirror(email) {
+    try { await setDoc(doc(db, "config_publico", "todos_dirigentes"), { emails: arrayUnion(email) }, { merge: true }); }
+    catch (e) { console.error('No se pudo actualizar el mirror de todos los dirigentes:', e); }
+  }
+
   async function verificarAccesoIntranet(email) {
     if (ADMINS_FIJOS.includes(email)) return { estado: 'ok', rol: 'admin' };
     const admSnap = await getDoc(doc(db, "administradores", email));
@@ -550,6 +592,7 @@
     try {
       await setDoc(doc(db, "autorizados", email), { autorizado: true, ramas, esJefe: !!esJefe }, { merge: true });
       await sincronizarMirrorPublico(email, [], esJefe ? ramas : []);
+      await sumarATodosDirigentesMirror(email);
       window.renderPermisosPanel();
       alert('✅ Acceso aprobado para ' + email + '.');
     } catch (err) { console.error(err); alert('⚠️ No se pudo aprobar: ' + err.message); }
@@ -558,6 +601,7 @@
     try {
       await window.hacerAdmin(email, true);
       await setDoc(doc(db, "autorizados", email), { autorizado: true }, { merge: true });
+      await sumarATodosDirigentesMirror(email);
       window.renderPermisosPanel();
       alert('✅ ' + email + ' aprobado/a como administrador.');
     } catch (err) { console.error(err); alert('⚠️ No se pudo aprobar como admin: ' + err.message); }
@@ -580,6 +624,7 @@
       email = email.toLowerCase();
       await setDoc(doc(db, "autorizados", email), { autorizado: true, ramas, esJefe: !!esJefe, agregadoPor: sesionEmail, fecha: Date.now() }, { merge: true });
       await sincronizarMirrorPublico(email, [], esJefe ? ramas : []);
+      await sumarATodosDirigentesMirror(email);
       window.renderPermisosPanel();
       if (!silencioso) alert('✅ Acceso otorgado a ' + email + '.');
     } catch (err) { console.error(err); alert('⚠️ No se pudo dar el acceso: ' + err.message); }
@@ -606,6 +651,7 @@
   window.hacerAdmin = async (email, silencioso) => {
     try {
       await setDoc(doc(db, "administradores", email), { agregadoPor: sesionEmail, fecha: Date.now() });
+      await sumarATodosDirigentesMirror(email);
       window.renderPermisosPanel();
       if (!silencioso) alert('✅ ' + email + ' ahora es administrador.');
     } catch (err) { console.error(err); alert('⚠️ No se pudo hacer admin: ' + err.message); }
@@ -1586,10 +1632,13 @@
     return d.toLocaleDateString('es-AR', { weekday: 'short', day: '2-digit', month: 'short' });
   }
 
-  // ============ CRONOGRAMA DE ENTREGA DE PROGRAMAS (editable por admin) ============
+  // ============ CRONOGRAMA DE ENTREGA DE PROGRAMAS Y OTRAS FECHAS (editable por admin) ============
   let cronogramaCache = [];
+  function ordenarCronograma(filas) {
+    return [...(filas || [])].sort((a, b) => (a.fecha || '9999-99-99').localeCompare(b.fecha || '9999-99-99'));
+  }
   onSnapshot(doc(db, "config", "cronograma_entregas"), d => {
-    cronogramaCache = d.exists() && d.data().filas ? d.data().filas : [];
+    cronogramaCache = ordenarCronograma(d.exists() && d.data().filas ? d.data().filas : []);
     renderCronogramaProgramaTab();
     if (window.renderCronogramaAdmin) window.renderCronogramaAdmin();
   }, () => { /* si el usuario todavía no está autorizado, isAutorizado() bloquea la lectura; no hacemos nada */ });
@@ -1600,11 +1649,11 @@
     if (cronogramaCache.length === 0) { wrap.innerHTML = ''; return; }
     wrap.innerHTML = `
       <div class="card">
-        <div class="card-header"><div class="icon icon-verde">🗓️</div><h2>Cronograma de Entrega de Programas</h2></div>
+        <div class="card-header"><div class="icon icon-verde">🗓️</div><h2>Cronograma de Entrega de Programas y otras fechas</h2></div>
         <div class="presentes-wrap">
           <table class="cronograma-tabla">
-            <tr><th>Ciclo</th><th>Fecha de Entrega</th></tr>
-            ${cronogramaCache.map(f => `<tr><td>${escapeHtml(f.evento||'')}</td><td>${f.fecha ? fmtFechaCortaDMY(f.fecha) : ''}</td></tr>`).join('')}
+            <tr><th>Ciclo</th><th>Fecha</th></tr>
+            ${cronogramaCache.map(f => `<tr class="${f.esCurso ? 'cronograma-fila-curso' : ''}"><td>${escapeHtml(f.evento||'')}${f.esCurso ? ' <span class=\"curso-badge\">📚 Curso</span>' : ''}</td><td>${f.fecha ? fmtFechaCortaDMY(f.fecha) : ''}</td></tr>`).join('')}
           </table>
         </div>
       </div>`;
@@ -1615,54 +1664,91 @@
   }
 
   // Mirror público del cronograma (sin login), para mostrarlo en Inicio con recordatorio
+  let cronogramaPublicoCache = [];
   onSnapshot(doc(db, "config_publico", "cronograma_entregas"), d => {
-    const filas = d.exists() && d.data().filas ? d.data().filas : [];
-    renderCronogramaInicio(filas);
+    cronogramaPublicoCache = ordenarCronograma(d.exists() && d.data().filas ? d.data().filas : []);
+    renderCronogramaInicio(cronogramaPublicoCache);
+    verificarRecordatorios15Dias(cronogramaPublicoCache);
   });
   function renderCronogramaInicio(filas) {
     const wrap = document.getElementById('cronograma-inicio-wrap');
     if (!wrap) return;
     if (!filas || filas.length === 0) { wrap.innerHTML = ''; return; }
     const hoyISO = new Date().toISOString().slice(0,10);
-    const pendientes = filas.filter(f => f.fecha && f.fecha >= hoyISO).sort((a,b) => a.fecha.localeCompare(b.fecha));
+    const pendientes = filas.filter(f => f.fecha && f.fecha >= hoyISO);
     const proxima = pendientes[0];
     let banner = '';
     if (proxima) {
       const dias = Math.round((new Date(proxima.fecha + 'T00:00:00') - new Date(hoyISO + 'T00:00:00')) / 86400000);
       const cuando = dias === 0 ? 'Hoy vence' : dias === 1 ? 'Mañana vence' : `Faltan ${dias} días para`;
-      banner = `<div class="cronograma-recordatorio">⏰ ${cuando} <b>${escapeHtml(proxima.evento)}</b> (${fmtFechaCortaDMY(proxima.fecha)})</div>`;
+      banner = `<div class="cronograma-recordatorio">⏰ ${cuando} ${proxima.esCurso ? '📚 ' : ''}<b>${escapeHtml(proxima.evento)}</b> (${fmtFechaCortaDMY(proxima.fecha)})</div>`;
     }
     wrap.innerHTML = `
       <div class="card">
-        <div class="card-header"><div class="icon icon-verde">🗓️</div><h2>Cronograma de Entrega de Programas</h2></div>
+        <div class="card-header"><div class="icon icon-verde">🗓️</div><h2>Cronograma de Entrega de Programas y otras fechas</h2></div>
         <div class="presentes-wrap">
           ${banner}
           <table class="cronograma-tabla">
-            <tr><th>Ciclo</th><th>Fecha de Entrega</th></tr>
-            ${filas.map(f => `<tr class="${proxima && f.fecha === proxima.fecha && f.evento === proxima.evento ? 'cronograma-fila-proxima' : ''}"><td>${escapeHtml(f.evento||'')}</td><td>${f.fecha ? fmtFechaCortaDMY(f.fecha) : ''}</td></tr>`).join('')}
+            <tr><th>Ciclo</th><th>Fecha</th></tr>
+            ${filas.map(f => `<tr class="${proxima && f.fecha === proxima.fecha && f.evento === proxima.evento ? 'cronograma-fila-proxima' : (f.esCurso ? 'cronograma-fila-curso' : '')}"><td>${escapeHtml(f.evento||'')}${f.esCurso ? ' <span class=\"curso-badge\">📚 Curso</span>' : ''}</td><td>${f.fecha ? fmtFechaCortaDMY(f.fecha) : ''}</td></tr>`).join('')}
           </table>
         </div>
       </div>`;
   }
 
+  // Recordatorio a 15 días: se chequea cada vez que alguien logueado visita Inicio.
+  // No hay forma de dispararlo "solo" a la medianoche sin un servidor corriendo; esto
+  // cubre el caso normal de uso diario de la Intranet.
+  async function verificarRecordatorios15Dias(filas) {
+    if (sesionEstado !== 'ok') return; // hace falta sesión para poder marcar el aviso como enviado
+    const hoyISO = new Date().toISOString().slice(0,10);
+    const hoy = new Date(hoyISO + 'T00:00:00');
+    const nuevasFilas = filas.map(f => ({ ...f }));
+    let cambios = false;
+    for (const f of nuevasFilas) {
+      if (!f.fecha || f.avisado15dias) continue;
+      const dias = Math.round((new Date(f.fecha + 'T00:00:00') - hoy) / 86400000);
+      if (dias >= 0 && dias <= 15) {
+        const destinatarios = todosLosDirigentesYAdmins();
+        if (destinatarios.length > 0 && window.emailjs && !EMAILJS_PUBLIC_KEY.startsWith('PONÉ')) {
+          try {
+            await Promise.all(destinatarios.map(email => window.emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_PROMESA, {
+              to_email: email, joven_nombre: `Recordatorio de cronograma: ${f.evento}`, tipo: f.esCurso ? 'Curso' : 'Cronograma',
+              rama: '', fecha: f.fecha.split('-').reverse().join('/'), hora: '', marcado_por: 'Sistema (aviso automático)'
+            })));
+            f.avisado15dias = true;
+            cambios = true;
+          } catch (e) { console.error('No se pudo enviar el recordatorio de cronograma:', e); }
+        }
+      }
+    }
+    if (cambios) {
+      try {
+        await setDoc(doc(db, "config", "cronograma_entregas"), { filas: nuevasFilas }, { merge: true });
+        await setDoc(doc(db, "config_publico", "cronograma_entregas"), { filas: nuevasFilas }, { merge: true });
+      } catch (e) { console.error('No se pudo marcar el recordatorio como enviado:', e); }
+    }
+  }
+
   let cronogramaEditState = null;
   window.abrirEdicionCronograma = () => {
-    cronogramaEditState = cronogramaCache.length > 0 ? JSON.parse(JSON.stringify(cronogramaCache)) : [{ evento: '', fecha: '' }];
+    cronogramaEditState = cronogramaCache.length > 0 ? JSON.parse(JSON.stringify(cronogramaCache)) : [{ evento: '', fecha: '', esCurso: false }];
     window.renderCronogramaAdmin();
   };
-  window.agregarFilaCronograma = () => { cronogramaEditState.push({ evento: '', fecha: '' }); window.renderCronogramaAdmin(); };
+  window.agregarFilaCronograma = () => { cronogramaEditState.push({ evento: '', fecha: '', esCurso: false }); window.renderCronogramaAdmin(); };
   window.quitarFilaCronograma = (i) => {
     const g = id => document.getElementById(id);
-    cronogramaEditState.forEach((_, idx) => { cronogramaEditState[idx] = { evento: g(`cronog-evento-${idx}`)?.value || '', fecha: g(`cronog-fecha-${idx}`)?.value || '' }; });
+    cronogramaEditState.forEach((_, idx) => { cronogramaEditState[idx] = { evento: g(`cronog-evento-${idx}`)?.value || '', fecha: g(`cronog-fecha-${idx}`)?.value || '', esCurso: g(`cronog-curso-${idx}`)?.checked || false }; });
     cronogramaEditState.splice(i, 1);
     window.renderCronogramaAdmin();
   };
   window.guardarCronograma = async () => {
     const g = id => document.getElementById(id);
-    cronogramaEditState.forEach((_, idx) => { cronogramaEditState[idx] = { evento: g(`cronog-evento-${idx}`)?.value || '', fecha: g(`cronog-fecha-${idx}`)?.value || '' }; });
+    cronogramaEditState.forEach((_, idx) => { cronogramaEditState[idx] = { evento: g(`cronog-evento-${idx}`)?.value || '', fecha: g(`cronog-fecha-${idx}`)?.value || '', esCurso: g(`cronog-curso-${idx}`)?.checked || false }; });
+    const ordenado = ordenarCronograma(cronogramaEditState);
     try {
-      await setDoc(doc(db, "config", "cronograma_entregas"), { filas: cronogramaEditState }, { merge: true });
-      await setDoc(doc(db, "config_publico", "cronograma_entregas"), { filas: cronogramaEditState }, { merge: true });
+      await setDoc(doc(db, "config", "cronograma_entregas"), { filas: ordenado }, { merge: true });
+      await setDoc(doc(db, "config_publico", "cronograma_entregas"), { filas: ordenado }, { merge: true });
       alert('✅ Cronograma guardado.');
       cronogramaEditState = null;
       window.renderCronogramaAdmin();
@@ -1674,11 +1760,11 @@
     if (!cronogramaEditState) {
       cont.innerHTML = `
         <div class="card">
-          <div class="card-header"><div class="icon icon-verde">🗓️</div><h2>Cronograma de Entrega de Programas</h2></div>
+          <div class="card-header"><div class="icon icon-verde">🗓️</div><h2>Cronograma de Entrega de Programas y otras fechas</h2></div>
           <div class="presentes-wrap">
             <table class="cronograma-tabla">
-              <tr><th>Ciclo</th><th>Fecha de Entrega</th></tr>
-              ${cronogramaCache.map(f => `<tr><td>${escapeHtml(f.evento||'')}</td><td>${f.fecha ? fmtFechaCortaDMY(f.fecha) : ''}</td></tr>`).join('') || '<tr><td colspan="2">Sin cargar todavía.</td></tr>'}
+              <tr><th>Ciclo</th><th>Fecha</th></tr>
+              ${cronogramaCache.map(f => `<tr><td>${escapeHtml(f.evento||'')}${f.esCurso ? ' <span class=\"curso-badge\">📚 Curso</span>' : ''}</td><td>${f.fecha ? fmtFechaCortaDMY(f.fecha) : ''}</td></tr>`).join('') || '<tr><td colspan="2">Sin cargar todavía.</td></tr>'}
             </table>
             <button class="btn-presentes-accion" onclick="abrirEdicionCronograma()" style="margin-top:10px;">✏️ Editar cronograma</button>
           </div>
@@ -1687,15 +1773,17 @@
     }
     cont.innerHTML = `
       <div class="card">
-        <div class="card-header"><div class="icon icon-verde">🗓️</div><h2>Editar Cronograma de Entrega</h2></div>
+        <div class="card-header"><div class="icon icon-verde">🗓️</div><h2>Editar Cronograma de Entrega de Programas y otras fechas</h2></div>
         <div class="presentes-wrap">
           ${cronogramaEditState.map((f,i) => `
             <div class="programa-dyn-row">
-              <input id="cronog-evento-${i}" placeholder="Ciclo (ej: Mensual Marzo)" value="${escapeHtml(f.evento||'')}">
+              <input id="cronog-evento-${i}" placeholder="Ciclo o evento (ej: Mensual Marzo, Curso de Formación)" value="${escapeHtml(f.evento||'')}">
               <input id="cronog-fecha-${i}" type="date" value="${f.fecha||''}">
+              <label class="cronog-curso-check"><input id="cronog-curso-${i}" type="checkbox" ${f.esCurso?'checked':''}> 📚 Curso</label>
               <button class="btn-quitar-fila" onclick="quitarFilaCronograma(${i})">✕</button>
             </div>`).join('')}
           <button class="btn-agregar-fila" onclick="agregarFilaCronograma()">+ Agregar fila</button>
+          <p style="font-size:11px;color:var(--text-sec);margin-top:6px;">Se van a ordenar solas por fecha más próxima al guardar.</p>
           <div class="form-row" style="margin-top:12px;">
             <button class="btn-presentes-accion" onclick="guardarCronograma()">💾 Guardar cronograma</button>
             <button class="btn-presentes-accion" style="background:#aaa" onclick="cronogramaEditState=null; window.renderCronogramaAdmin();">Cancelar</button>
@@ -2321,6 +2409,8 @@
   .joven-card .info { flex: 1; }
   .joven-card .info strong { font-size: 13px; display: block; }
   .joven-card .info span { font-size: 11px; color: var(--text-sec); }
+  .joven-card-foto { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; flex-shrink: 0; }
+  .joven-card-foto-inicial { display: flex; align-items: center; justify-content: center; background: var(--azul-cl); color: var(--azul); font-weight: 700; font-size: 15px; }
   .joven-card-acciones { display: flex; gap: 6px; }
   .joven-card-acciones button {
     background: white; border: 1px solid var(--azul-cl); border-radius: 6px;
@@ -2337,6 +2427,9 @@
     background: var(--fondo-cl); border: 1px solid var(--crema); border-radius: var(--radius);
     padding: 16px; margin-bottom: 16px;
   }
+  .foto-joven-wrap { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+  .foto-joven-wrap img { width: 56px; height: 56px; border-radius: 50%; object-fit: cover; border: 2px solid var(--azul-cl); }
+  .foto-joven-wrap div { flex: 1; }
   .form-joven-card .form-row { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
   .form-joven-card input, .form-joven-card select {
     flex: 1; min-width: 120px; padding: 9px 12px; border-radius: 8px;
@@ -2487,6 +2580,10 @@
   .cronograma-tabla td { padding: 7px 10px; border-bottom: 1px solid var(--crema); }
   .cronograma-recordatorio { background: var(--amarillo-cl); border-left: 3px solid var(--amarillo); border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; font-size: 13px; }
   .cronograma-fila-proxima td { background: var(--amarillo-cl); font-weight: 700; }
+  .cronograma-fila-curso td { background: #ede7f6; }
+  .curso-badge { display: inline-block; background: #6a1b9a; color: white; font-size: 9.5px; font-weight: 800; padding: 2px 7px; border-radius: 8px; margin-left: 4px; }
+  .cronog-curso-check { display: flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 700; color: #6a1b9a; white-space: nowrap; }
+  .cronog-curso-check input { width: 15px; height: 15px; }
   .solo-lectura-tag { display: inline-block; margin-left: 8px; font-size: 10px; background: var(--fondo-cl); color: var(--text-sec); padding: 2px 7px; border-radius: 4px; font-style: italic; }
 
   /* Chip de perfil (header) */
@@ -2898,6 +2995,7 @@
     if (window.jovenesCache.length === 0) { wrap.innerHTML = `<p class="presentes-empty">No hay jóvenes cargados todavía.</p>`; return; }
     wrap.innerHTML = window.jovenesCache.map(j => `
       <div class="joven-card">
+        ${j.foto ? `<img src="${j.foto}" class="joven-card-foto">` : `<div class="joven-card-foto joven-card-foto-inicial">${(j.nombre||'?').charAt(0).toUpperCase()}</div>`}
         <div class="info">
           <strong>${j.nombre} ${j.apellido}</strong>
           <span>${j.rama} · ${window.calcularEdad(j.fechaNacimiento) ?? "—"} años · nació ${j.fechaNacimiento || "—"}</span>
@@ -2960,8 +3058,16 @@
   window.abrirFormJoven = (joven) => {
     const wrap = document.getElementById('form-joven-wrap');
     const j = joven || {};
+    window._fotoJovenBase64 = j.foto || null;
     wrap.innerHTML = `
       <div class="form-joven-card">
+        <div class="foto-joven-wrap">
+          <img id="fj-foto-preview" src="${j.foto||''}" style="display:${j.foto?'block':'none'};">
+          <div>
+            <label style="font-size:11px; color:var(--text-sec); display:block; margin-bottom:4px;">Foto (opcional — se ve también en el Portal de Jóvenes)</label>
+            <input type="file" accept="image/*" onchange="procesarFotoJoven(this)">
+          </div>
+        </div>
         <div class="form-row">
           <input id="fj-nombre" placeholder="Nombre" value="${j.nombre||''}">
           <input id="fj-apellido" placeholder="Apellido" value="${j.apellido||''}">
@@ -2987,6 +3093,29 @@
       </div>`;
   };
 
+  window.procesarFotoJoven = (input) => {
+    const file = input.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const maxDim = 300;
+        let w = img.width, h = img.height;
+        if (w > h) { if (w > maxDim) { h = Math.round(h * maxDim / w); w = maxDim; } }
+        else { if (h > maxDim) { w = Math.round(w * maxDim / h); h = maxDim; } }
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        window._fotoJovenBase64 = canvas.toDataURL('image/jpeg', 0.7);
+        const preview = document.getElementById('fj-foto-preview');
+        if (preview) { preview.src = window._fotoJovenBase64; preview.style.display = 'block'; }
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  };
+
   window.guardarFormJoven = async (id, ramaAnterior) => {
     const datos = {
       nombre: document.getElementById('fj-nombre').value.trim(),
@@ -2994,7 +3123,8 @@
       fechaNacimiento: document.getElementById('fj-fecha').value,
       rama: document.getElementById('fj-rama').value,
       contacto: document.getElementById('fj-contacto').value.trim(),
-      email: document.getElementById('fj-email').value.trim().toLowerCase()
+      email: document.getElementById('fj-email').value.trim().toLowerCase(),
+      foto: window._fotoJovenBase64 || ''
     };
     if (!datos.nombre || !datos.apellido || !datos.rama) { alert('Completá nombre, apellido y rama.'); return; }
 
@@ -3018,6 +3148,10 @@
         : await window.crearPerfilPendienteEnPortal(jovenId, nombreCompleto, ramaFinal);
       if (resultado.ok) await window.marcarJovenSincronizado(jovenId);
       else console.warn('No se pudo sincronizar con el Portal de Jóvenes:', resultado.motivo);
+      if (datos.foto) {
+        const resFoto = await window.actualizarFotoEnPortal(datos.email, jovenId, datos.foto);
+        if (!resFoto.ok) console.warn('No se pudo actualizar la foto en el Portal:', resFoto.motivo);
+      }
     }
     document.getElementById('form-joven-wrap').innerHTML = '';
   };
