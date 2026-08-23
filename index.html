@@ -2158,6 +2158,15 @@
 
   /* Cronograma de entregas */
   .cronograma-tabla { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .metricas-matriz-tabla { border-collapse: collapse; font-size: 12px; white-space: nowrap; }
+  .metricas-matriz-tabla th, .metricas-matriz-tabla td { border: 1px solid var(--crema); padding: 6px 9px; text-align: center; }
+  .metricas-matriz-tabla th { background: var(--azul-cl); color: var(--azul); font-weight: 700; }
+  .metricas-matriz-tabla .matriz-col-fija { text-align: left; background: white; position: sticky; left: 0; }
+  .metricas-matriz-tabla th.matriz-col-fija { background: var(--azul-cl); }
+  .matriz-rama-chip { font-size: 10.5px; font-weight: 700; padding: 2px 8px; border-radius: 10px; white-space: nowrap; }
+  .matriz-celda-si { background: #e8f5e9; }
+  .matriz-celda-no { background: #fdecea; }
+  .matriz-celda-vacia { color: #ccc; }
   .cronograma-tabla th { background: var(--azul-cl); color: var(--azul); text-align: left; padding: 8px 10px; }
   .cronograma-tabla td { padding: 7px 10px; border-bottom: 1px solid var(--crema); }
   .cronograma-recordatorio { background: var(--amarillo-cl); border-left: 3px solid var(--amarillo); border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; font-size: 13px; }
@@ -2842,6 +2851,8 @@
   };
 
   let chartPresentismo = null;
+  const RAMA_COLORES_METRICAS = { Castores: '#FF6B00', Manada: '#FFD600', Scouts: '#2E7D32', Caminantes: '#1565C0', Rovers: '#B71C1C' };
+  const RAMAS_METRICAS = ['Castores','Manada','Scouts','Caminantes','Rovers'];
 
   window.cargarMetricas = async () => {
     const rama = document.getElementById('metricas-rama-select').value;
@@ -2850,36 +2861,55 @@
     if (!desde || !hasta) return;
 
     const datos = await window.obtenerAsistenciasRango(rama, desde, hasta);
-
-    const porFecha = {};
-    datos.forEach(d => {
-      if (!d.presente) return;
-      porFecha[d.fecha] = (porFecha[d.fecha] || 0) + 1;
-    });
-    const fechas = Object.keys(porFecha).sort();
-    const valores = fechas.map(f => porFecha[f]);
-
     const ctx = document.getElementById('grafico-presentismo').getContext('2d');
     if (chartPresentismo) chartPresentismo.destroy();
-    chartPresentismo = new Chart(ctx, {
-      type: 'bar',
-      data: {
-        labels: fechas.length ? fechas : ['Sin datos'],
-        datasets: [{
-          label: rama ? `Presentes — ${rama}` : 'Presentes — todas las ramas',
-          data: valores.length ? valores : [0],
-          backgroundColor: '#1a3a6b'
-        }]
-      },
-      options: { responsive: true, scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } } }
-    });
+
+    let fechas, totalPresentes;
+
+    if (rama) {
+      // Una sola rama: una sola serie, con su color propio
+      const porFecha = {};
+      datos.forEach(d => { if (d.presente) porFecha[d.fecha] = (porFecha[d.fecha] || 0) + 1; });
+      fechas = Object.keys(porFecha).sort();
+      const valores = fechas.map(f => porFecha[f]);
+      totalPresentes = valores.reduce((a,b) => a+b, 0);
+      chartPresentismo = new Chart(ctx, {
+        type: 'bar',
+        data: { labels: fechas.length ? fechas : ['Sin datos'], datasets: [{ label: `Presentes — ${rama}`, data: valores.length ? valores : [0], backgroundColor: RAMA_COLORES_METRICAS[rama] || '#1a3a6b' }] },
+        options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } } }
+      });
+    } else {
+      // Todas las ramas: columnas apiladas, un color por rama, el total del día es la suma de la columna
+      const porFechaRama = {};
+      datos.forEach(d => {
+        if (!d.presente) return;
+        const f = d.fecha, r = d.rama || 'Sin rama';
+        if (!porFechaRama[f]) porFechaRama[f] = {};
+        porFechaRama[f][r] = (porFechaRama[f][r] || 0) + 1;
+      });
+      fechas = Object.keys(porFechaRama).sort();
+      const datasets = RAMAS_METRICAS.map(r => ({
+        label: r,
+        data: fechas.map(f => (porFechaRama[f] && porFechaRama[f][r]) || 0),
+        backgroundColor: RAMA_COLORES_METRICAS[r]
+      }));
+      totalPresentes = datos.filter(d => d.presente).length;
+      chartPresentismo = new Chart(ctx, {
+        type: 'bar',
+        data: { labels: fechas.length ? fechas : ['Sin datos'], datasets },
+        options: {
+          responsive: true,
+          plugins: { legend: { display: true, position: 'bottom' } },
+          scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true, ticks: { stepSize: 1 } } }
+        }
+      });
+    }
 
     const totalReuniones = fechas.length;
-    const totalPresentes = valores.reduce((a,b) => a+b, 0);
     const promedio = totalReuniones ? (totalPresentes / totalReuniones).toFixed(1) : 0;
     document.getElementById('metricas-resumen').innerHTML = `
       <div class="info-resumen">
-        <strong>Resumen del período:</strong> ${totalReuniones} reunión(es) con asistencia registrada · promedio de ${promedio} presentes por reunión.
+        <strong>Resumen del período:</strong> ${totalReuniones} reunión(es) con asistencia registrada · promedio de ${promedio} presentes por reunión${!rama ? ' (todas las ramas combinadas)' : ''}.
       </div>`;
   };
 
@@ -2906,37 +2936,46 @@
     const datos = await window.obtenerAsistenciasRango(rama, desde, hasta);
     if (datos.length === 0) { wrap.innerHTML = `<p class="presentes-empty">No hay asistencia registrada en este período${rama ? ' para ' + rama : ''}.</p>`; return; }
 
-    // Agrupamos por fecha, y dentro de cada fecha por rama (por si el filtro es "Todas las ramas")
-    const porFecha = {};
-    datos.forEach(d => {
-      if (!porFecha[d.fecha]) porFecha[d.fecha] = {};
-      const r = d.rama || 'Sin rama';
-      if (!porFecha[d.fecha][r]) porFecha[d.fecha][r] = { presentes: [], ausentes: [] };
-      (d.presente ? porFecha[d.fecha][r].presentes : porFecha[d.fecha][r].ausentes).push(d.jovenNombre || '(sin nombre)');
-    });
+    // Columnas: cada fecha con asistencia tomada, ordenadas cronológicamente
+    const fechas = Array.from(new Set(datos.map(d => d.fecha))).sort();
 
-    const fechasOrdenadas = Object.keys(porFecha).sort().reverse();
-    wrap.innerHTML = fechasOrdenadas.map(f => {
-      const fechaFmt = new Date(f + 'T00:00:00').toLocaleDateString('es-AR', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' });
-      const porRamaEseDia = porFecha[f];
-      return Object.keys(porRamaEseDia).map(r => {
-        const g = porRamaEseDia[r];
-        return `
-        <div class="info-card" style="margin-bottom:10px;">
-          <h4 style="text-transform:capitalize">${fechaFmt} · ${escapeHtml(r)}</h4>
-          <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px">
-            <div style="flex:1;min-width:150px">
-              <strong style="color:#2e7d32;font-size:12px">✅ Presentes (${g.presentes.length})</strong>
-              <p style="font-size:12.5px;margin-top:4px;line-height:1.5">${g.presentes.length ? g.presentes.join(', ') : '—'}</p>
-            </div>
-            <div style="flex:1;min-width:150px">
-              <strong style="color:#b01a1a;font-size:12px">❌ Ausentes (${g.ausentes.length})</strong>
-              <p style="font-size:12.5px;margin-top:4px;line-height:1.5">${g.ausentes.length ? g.ausentes.join(', ') : '—'}</p>
-            </div>
-          </div>
-        </div>`;
-      }).join('');
-    }).join('');
+    // Filas: una por joven (agrupado por jovenId, con su rama)
+    const personas = {};
+    datos.forEach(d => {
+      const key = d.jovenId || d.jovenNombre || Math.random();
+      if (!personas[key]) personas[key] = { nombre: d.jovenNombre || '(sin nombre)', rama: d.rama || '', porFecha: {} };
+      personas[key].porFecha[d.fecha] = d.presente;
+    });
+    const listaPersonas = Object.values(personas).sort((a, b) => (a.rama||'').localeCompare(b.rama||'') || a.nombre.localeCompare(b.nombre));
+
+    wrap.innerHTML = `
+      <div style="overflow-x:auto;">
+        <table class="metricas-matriz-tabla">
+          <thead>
+            <tr>
+              <th class="matriz-col-fija">Joven</th>
+              <th class="matriz-col-fija">Rama</th>
+              ${fechas.map(f => `<th>${new Date(f+'T00:00:00').toLocaleDateString('es-AR', {day:'2-digit', month:'2-digit'})}</th>`).join('')}
+            </tr>
+          </thead>
+          <tbody>
+            ${listaPersonas.map(p => {
+              const color = RAMA_COLORES_METRICAS[p.rama] || '#888';
+              return `
+              <tr>
+                <td class="matriz-col-fija">${escapeHtml(p.nombre)}</td>
+                <td class="matriz-col-fija"><span class="matriz-rama-chip" style="background:${color}22;color:${color}">${escapeHtml(p.rama||'—')}</span></td>
+                ${fechas.map(f => {
+                  const val = p.porFecha[f];
+                  if (val === undefined) return `<td class="matriz-celda-vacia">—</td>`;
+                  return val ? `<td class="matriz-celda-si">✅</td>` : `<td class="matriz-celda-no">❌</td>`;
+                }).join('')}
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+      <p style="font-size:11px;color:var(--text-sec);margin-top:8px">Las columnas son las fechas con lista tomada dentro del período elegido. "—" significa que esa fecha no correspondía a la rama de esa persona.</p>`;
   };
 
   function escapeHtml(s) {
