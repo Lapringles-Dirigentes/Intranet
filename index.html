@@ -1535,17 +1535,38 @@
         <div class="card-header"><div class="icon icon-amari">🎗️</div><h2>Próximas Ceremonias</h2></div>
         <div class="presentes-wrap">
           ${todas.slice(0, 8).map(c => {
-            const puedeEliminar = sesionEsAdmin || misRamas.includes(c.rama);
+            const puedeGestionar = sesionEsAdmin || misRamas.includes(c.rama);
             return `
             <div class="ceremonia-proxima-item">
               <div class="ceremonia-proxima-fecha">${fmtFechaCorta(c.fecha)}${c.hora ? ' · ' + c.hora + 'hs' : ''}</div>
               <div class="ceremonia-proxima-info"><strong>${escapeHtml(c.tipo || 'Ceremonia')}</strong> — ${escapeHtml(c.personas || c.nombre || '')} <span>(${escapeHtml(c.rama||'')})</span></div>
-              ${puedeEliminar ? `<button class="ceremonia-proxima-del" title="Eliminar" onclick="eliminarCeremoniaProxima('${c._progId}',${c._idx},'${c.rama}')">🗑️</button>` : ''}
+              ${puedeGestionar ? `
+              <button class="ceremonia-proxima-reenviar" title="Reenviar aviso por mail" onclick="reenviarAvisoCeremonia('${c._progId}',${c._idx})">📧</button>
+              <button class="ceremonia-proxima-del" title="Eliminar" onclick="eliminarCeremoniaProxima('${c._progId}',${c._idx},'${c.rama}')">🗑️</button>` : ''}
             </div>`;
           }).join('')}
         </div>
       </div>`;
   }
+  window.reenviarAvisoCeremonia = async (progId, idx) => {
+    const c = (proximasCeremoniasCache[progId] || [])[idx];
+    if (!c) { alert('No se encontró esa ceremonia.'); return; }
+    if (!sesionEsAdmin && !misRamas.includes(c.rama)) { alert('Solo un administrador, o un dirigente de la rama ' + c.rama + ', puede reenviar este aviso.'); return; }
+    if (!confirm(`¿Reenviar el aviso de "${c.tipo || 'Ceremonia'} — ${c.personas || c.nombre}" a todos los jefes de rama y administradores?`)) return;
+    try {
+      const destinatarios = todosLosJefesYAdmins();
+      if (destinatarios.length === 0) { alert('Todavía no hay ningún jefe de rama ni administrador cargado en Permisos.'); return; }
+      if (!window.emailjs || EMAILJS_PUBLIC_KEY.startsWith('PONÉ')) { alert('El envío de mail todavía no está configurado.'); return; }
+      const fechaFmt = c.fecha ? c.fecha.split('-').reverse().join('/') : '';
+      await Promise.all(destinatarios.map(email => window.emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_PROMESA, {
+        to_email: email, joven_nombre: `${c.tipo ? c.tipo + ': ' : ''}${c.personas || c.nombre}`, tipo: c.tipo || 'Ceremonia',
+        rama: c.rama, fecha: fechaFmt, hora: c.hora || '', marcado_por: sesionEmail
+      })));
+      alert('✅ Aviso reenviado a todos los jefes de rama y administradores.');
+    } catch (err) {
+      alert('⚠️ No se pudo reenviar: ' + err.message);
+    }
+  };
   window.eliminarCeremoniaProxima = async (progId, idx, rama) => {
     if (!sesionEsAdmin && !misRamas.includes(rama)) { alert('Solo un administrador, o un dirigente de la rama ' + rama + ', puede eliminar esta ceremonia.'); return; }
     if (!confirm('¿Eliminar este recordatorio de ceremonia del Inicio? (esto no borra la actividad del Programa, solo el aviso.)')) return;
@@ -2445,6 +2466,7 @@
   /* Próximas ceremonias (Inicio) */
   .ceremonia-proxima-item { display: flex; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--fondo); }
   .ceremonia-proxima-del { background: none; border: none; color: var(--rojo); font-size: 15px; cursor: pointer; padding: 4px 6px; flex-shrink: 0; }
+  .ceremonia-proxima-reenviar { background: none; border: none; color: var(--azul-med); font-size: 15px; cursor: pointer; padding: 4px 6px; flex-shrink: 0; }
   .ceremonia-proxima-item:last-child { border-bottom: none; }
   .ceremonia-proxima-fecha { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--azul-med); font-weight: 700; white-space: nowrap; background: var(--azul-cl); padding: 4px 8px; border-radius: 6px; text-transform: capitalize; }
   .ceremonia-proxima-info { font-size: 13px; }
@@ -3172,7 +3194,14 @@
       chartPresentismo = new Chart(ctx, {
         type: 'bar',
         data: { labels: fechas.length ? fechas : ['Sin datos'], datasets: [{ label: `Presentes — ${rama}`, data: valores.length ? valores : [0], backgroundColor: RAMA_COLORES_METRICAS[rama] || '#1a3a6b' }] },
-        options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } } }
+        options: {
+          responsive: true,
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { ticks: { callback: (value, index) => [fechas[index] || '', `Total: ${porFecha[fechas[index]] || 0}`] } },
+            y: { beginAtZero: true, ticks: { stepSize: 1 } }
+          }
+        }
       });
     } else {
       // Todas las ramas: columnas apiladas, un color por rama, el total del día es la suma de la columna
@@ -3184,6 +3213,8 @@
         porFechaRama[f][r] = (porFechaRama[f][r] || 0) + 1;
       });
       fechas = Object.keys(porFechaRama).sort();
+      const totalPorFecha = {};
+      fechas.forEach(f => { totalPorFecha[f] = RAMAS_METRICAS.reduce((s,r) => s + ((porFechaRama[f] && porFechaRama[f][r]) || 0), 0); });
       const datasets = RAMAS_METRICAS.map(r => ({
         label: r,
         data: fechas.map(f => (porFechaRama[f] && porFechaRama[f][r]) || 0),
@@ -3196,7 +3227,10 @@
         options: {
           responsive: true,
           plugins: { legend: { display: true, position: 'bottom' } },
-          scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true, ticks: { stepSize: 1 } } }
+          scales: {
+            x: { stacked: true, ticks: { callback: (value, index) => [fechas[index] || '', `Total: ${totalPorFecha[fechas[index]] || 0}`] } },
+            y: { stacked: true, beginAtZero: true, ticks: { stepSize: 1 } }
+          }
         }
       });
     }
