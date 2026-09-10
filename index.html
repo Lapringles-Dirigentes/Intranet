@@ -1345,7 +1345,7 @@
       const pageEls = cont.querySelectorAll('.pdf-page');
       const pdf = new window.jspdf.jsPDF({ unit: 'px', format: [PDF_PAGE_W, PDF_PAGE_H] });
       for (let i = 0; i < pageEls.length; i++) {
-        const canvas = await html2canvas(pageEls[i], { scale: 2, useCORS: true });
+        const canvas = await html2canvas(pageEls[i], { scale: 2, useCORS: true, scrollX: -window.scrollX, scrollY: -window.scrollY });
         const imgData = canvas.toDataURL('image/jpeg', 0.92);
         if (i > 0) pdf.addPage([PDF_PAGE_W, PDF_PAGE_H]);
         pdf.addImage(imgData, 'JPEG', 0, 0, PDF_PAGE_W, PDF_PAGE_H);
@@ -2889,8 +2889,12 @@
   .actividad-block-form input { width: 100%; }
 
   /* Documento generado (fuera de pantalla, usado para el PDF) */
-  #programa-pdf-render, .pdf-measure { position: fixed; left: -9999px; top: 0; width: 794px; background: white; }
-  #ai-pdf-render { position: fixed; left: -9999px; top: 0; background: white; }
+  /* Ocultos "de verdad" pero en coordenadas normales: un left/top muy negativo (-9999px)
+     hace que html2canvas capture en blanco cuando el contenido tiene varias páginas
+     (como el Programa). Con z-index negativo quedan tapados por el resto de la app,
+     sin necesidad de sacarlos de las coordenadas normales de la pantalla. */
+  #programa-pdf-render, .pdf-measure { position: fixed; left: 0; top: 0; z-index: -1000; width: 794px; background: white; }
+  #ai-pdf-render { position: fixed; left: 0; top: 0; z-index: -1000; background: white; }
 
   /* ---- AUTORIZACIÓN DE INGRESO ---- */
   .ai-page { width: 794px; min-height: 1123px; padding: 46px 54px; background: white; font-family: 'Source Sans 3', Arial, sans-serif; color: #000; box-sizing: border-box; font-size: 13px; line-height: 1.55; }
@@ -4137,7 +4141,7 @@
     await new Promise(r => setTimeout(r, 250));
     try {
       const pageEl = cont.querySelector('.ai-page');
-      const canvas = await html2canvas(pageEl, { scale: 2, useCORS: true });
+      const canvas = await html2canvas(pageEl, { scale: 2, useCORS: true, scrollX: -window.scrollX, scrollY: -window.scrollY });
       const imgData = canvas.toDataURL('image/jpeg', 0.92);
       const pdf = new window.jspdf.jsPDF({ unit: 'px', format: [794, 1123] });
       pdf.addImage(imgData, 'JPEG', 0, 0, 794, 1123);
@@ -4235,7 +4239,7 @@
     await new Promise(r => setTimeout(r, 250));
     try {
       const pageEl = cont.querySelector('.leg-page');
-      const canvas = await html2canvas(pageEl, { scale: 2, useCORS: true });
+      const canvas = await html2canvas(pageEl, { scale: 2, useCORS: true, scrollX: -window.scrollX, scrollY: -window.scrollY });
       const imgData = canvas.toDataURL('image/jpeg', 0.92);
       const pdf = new window.jspdf.jsPDF({ unit: 'px', format: [794, 1123] });
       pdf.addImage(imgData, 'JPEG', 0, 0, 794, 1123);
