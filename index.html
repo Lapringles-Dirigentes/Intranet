@@ -3675,6 +3675,34 @@
           <label style="font-size:12px; font-weight:700; color:#b01a1a; display:block; margin-bottom:4px;">⚠️ Afectación especial a tener en cuenta <span class="opcional-tag">(opcional — síndrome, dificultad motriz, trastorno, alergia grave, etc.)</span></label>
           <textarea id="fj-afectacion" placeholder="Ej: Síndrome de Down, requiere acompañamiento en actividades físicas">${escapeHtml(j.afectacionEspecial||'')}</textarea>
         </div>
+        ${j.id ? `
+        <div class="programa-form-section">
+          <h4>Documentación / Legajo <span class="opcional-tag">(se refleja directo en la cuenta del joven en el Portal)</span></h4>
+          <div class="checklist-docs">
+            ${DOCS_REQUERIDOS_AI.map(k => `
+              <label class="checklist-doc-item">
+                <input type="checkbox" id="ai-doc-${k}" ${(j.documentacion && j.documentacion[k]) ? 'checked' : ''}>
+                ${DOCS_LABELS_AI[k]}
+              </label>`).join('')}
+            ${window._itemsDocCustom().filter(it => (it.jovenesIds||[]).includes(j.id)).map(it => `
+              <label class="checklist-doc-item checklist-doc-item-custom">
+                <input type="checkbox" id="ai-doc-${it.id}" ${(j.documentacion && j.documentacion[it.id]) ? 'checked' : ''}>
+                ${escapeHtml(it.nombre)} <span class="doc-item-anio">(${it.anio})</span>
+              </label>`).join('')}
+          </div>
+        </div>
+        <div class="programa-form-section">
+          <h4>📎 Autorización ya existente en papel <span class="opcional-tag">(foto o escaneo — no se autocompleta nada con esto, queda tal cual)</span></h4>
+          <div id="ai-autorizaciones-existentes-lista">${renderListaArchivos(j.autorizacionesExistentes || [], 'quitarAutorizacionExistente')}</div>
+          <input type="file" id="ai-autorizacion-existente-input" accept="application/pdf,image/*" onchange="subirAutorizacionExistente()">
+          <p id="ai-autorizacion-existente-status" style="font-size:11px;color:var(--text-sec);margin-top:4px;"></p>
+        </div>
+        <div class="programa-form-section">
+          <h4>Archivos médicos adjuntos <span class="opcional-tag">(se suben a la carpeta de Drive configurada en Permisos)</span></h4>
+          <div id="ai-archivos-lista">${renderListaArchivos(j.archivosMedicos || [], 'quitarArchivoMedico')}</div>
+          <input type="file" id="ai-archivo-input" accept="application/pdf,image/*" onchange="subirArchivoMedico()">
+          <p id="ai-archivo-status" style="font-size:11px;color:var(--text-sec);margin-top:4px;"></p>
+        </div>` : ''}
         <div class="form-row">
           <button class="btn-presentes-accion" onclick="guardarFormJoven('${j.id||''}','${j.rama||''}')">💾 Guardar</button>
           <button class="btn-presentes-accion" style="background:#aaa" onclick="cerrarFormJoven('${j.id||''}')">Cancelar</button>
@@ -3693,6 +3721,7 @@
     }
     // Edición de un joven existente: se despliega debajo de su propia ficha en la lista
     document.getElementById('form-joven-wrap').innerHTML = '';
+    window._autorizacionJovenId = joven.id; // lo usan subirArchivoMedico/subirAutorizacionExistente
     jovenEditandoId = joven.id;
     window.renderJovenesLista();
   };
@@ -3745,6 +3774,10 @@
       return;
     }
 
+    // El checklist de Documentación / Legajo solo aparece en el formulario cuando el joven ya existe
+    const documentacion = id && document.getElementById(`ai-doc-${DOCS_REQUERIDOS_AI[0]}`) ? leerChecklistDesdeDOM(id) : null;
+    if (documentacion) datos.documentacion = documentacion;
+
     if (id && ramaAnterior && ramaAnterior !== datos.rama) {
       await window.cambiarRamaJoven(id, ramaAnterior, datos.rama);
       delete datos.rama;
@@ -3754,7 +3787,7 @@
 
     // Lo empujamos al Portal de Jóvenes: con acceso real si tiene email, o como perfil pendiente si no.
     if (!window._scoutSesionOk()) {
-      if (confirm('Joven guardado en la Intranet. Para sincronizarlo también con el Portal de Jóvenes hace falta conectar ese portal (un segundo inicio de sesión con tu misma cuenta). ¿Conectar ahora?')) {
+      if (confirm('Joven guardado en la Intranet. Para sincronizarlo también con el Portal de Jóvenes (y reflejar la documentación) hace falta conectar ese portal (un segundo inicio de sesión con tu misma cuenta). ¿Conectar ahora?')) {
         await window.conectarConPortalJovenes();
       }
     }
@@ -3769,6 +3802,12 @@
         const resFoto = await window.actualizarFotoEnPortal(datos.email, jovenId, datos.foto);
         if (!resFoto.ok) console.warn('No se pudo actualizar la foto en el Portal:', resFoto.motivo);
       }
+      if (documentacion) {
+        const resSync = await window.propagarDocumentacionAlPortal(datos.email, jovenId, documentacion);
+        if (!resSync.ok) alert('✅ Guardado, pero la documentación no se pudo reflejar en el Portal de Jóvenes (motivo: ' + resSync.motivo + ').');
+      }
+    } else if (documentacion) {
+      alert('✅ Guardado en la Intranet. La documentación NO se reflejó en el Portal de Jóvenes porque no se conectó esa cuenta.');
     }
     window.cerrarFormJoven(id);
   };
@@ -3797,7 +3836,8 @@
 
     wrap.innerHTML = `
       <div class="form-joven-card">
-        <h4 style="color:var(--azul);font-family:'Playfair Display',serif;margin-bottom:10px;">📄 Autorización de Ingreso — ${escapeHtml(j.nombre)} ${escapeHtml(j.apellido)}</h4>
+        <h4 style="color:var(--azul);font-family:'Playfair Display',serif;margin-bottom:4px;">📄 Autorización de Ingreso — ${escapeHtml(j.nombre)} ${escapeHtml(j.apellido)}</h4>
+        <p style="font-size:11px;color:var(--text-sec);margin-bottom:10px;">El checklist de documentación y los archivos adjuntos (médicos y autorización ya firmada) ahora se cargan desde "✏️ Editar" en la ficha del joven.</p>
 
         <div class="programa-form-section">
           <h4>Datos del menor</h4>
@@ -3854,36 +3894,6 @@
             <input id="ai-testigo2-nombre" placeholder="Nombre y apellido" value="${escapeHtml(test[1]?.nombre||'')}">
             <input id="ai-testigo2-dni" placeholder="DNI" value="${escapeHtml(test[1]?.dni||'')}">
           </div>
-        </div>
-
-        <div class="programa-form-section">
-          <h4>Documentación / Legajo <span class="opcional-tag">(se refleja directo en la cuenta del joven en el Portal)</span></h4>
-          <div class="checklist-docs">
-            ${DOCS_REQUERIDOS_AI.map(k => `
-              <label class="checklist-doc-item">
-                <input type="checkbox" id="ai-doc-${k}" ${(j.documentacion && j.documentacion[k]) ? 'checked' : ''}>
-                ${DOCS_LABELS_AI[k]}
-              </label>`).join('')}
-            ${window._itemsDocCustom().filter(it => (it.jovenesIds||[]).includes(j.id)).map(it => `
-              <label class="checklist-doc-item checklist-doc-item-custom">
-                <input type="checkbox" id="ai-doc-${it.id}" ${(j.documentacion && j.documentacion[it.id]) ? 'checked' : ''}>
-                ${escapeHtml(it.nombre)} <span class="doc-item-anio">(${it.anio})</span>
-              </label>`).join('')}
-          </div>
-        </div>
-
-        <div class="programa-form-section">
-          <h4>📎 Autorización ya existente en papel <span class="opcional-tag">(foto o escaneo — no se autocompleta nada con esto, queda tal cual)</span></h4>
-          <div id="ai-autorizaciones-existentes-lista">${renderListaArchivos(j.autorizacionesExistentes || [], 'quitarAutorizacionExistente')}</div>
-          <input type="file" id="ai-autorizacion-existente-input" accept="application/pdf,image/*" onchange="subirAutorizacionExistente()">
-          <p id="ai-autorizacion-existente-status" style="font-size:11px;color:var(--text-sec);margin-top:4px;"></p>
-        </div>
-
-        <div class="programa-form-section">
-          <h4>Archivos médicos adjuntos <span class="opcional-tag">(se suben a la carpeta de Drive configurada en Permisos)</span></h4>
-          <div id="ai-archivos-lista">${renderListaArchivos(j.archivosMedicos || [], 'quitarArchivoMedico')}</div>
-          <input type="file" id="ai-archivo-input" accept="application/pdf,image/*" onchange="subirArchivoMedico()">
-          <p id="ai-archivo-status" style="font-size:11px;color:var(--text-sec);margin-top:4px;"></p>
         </div>
 
         <div class="programa-form-section">
@@ -4037,25 +4047,13 @@
     const datosForm = leerDatosAutorizacionDesdeDOM();
     if (!datosForm.autorizante.nombreCompleto || !datosForm.autorizante.dni) { alert('Completá al menos el nombre y DNI de quien autoriza.'); return; }
     const autorizacionCompleta = { ...datosForm, firmaAutorizante: window._autorizacionFirmaBase64 || null, actualizadoEn: Date.now() };
-    const documentacion = leerChecklistDesdeDOM(jovenId);
     try {
       await window.guardarJoven(jovenId, {
         dni: datosForm.menor.dni, nacionalidad: datosForm.menor.nacionalidad, domicilio: datosForm.menor.domicilio,
-        autorizacionIngreso: autorizacionCompleta, documentacion
+        autorizacionIngreso: autorizacionCompleta
       });
     } catch (err) { alert('⚠️ No se pudo guardar: ' + err.message); return; }
-
-    if (!window._scoutSesionOk()) {
-      if (confirm('Guardado en la Intranet. Para que el checklist de documentación se refleje también en el Portal de Jóvenes, hace falta conectar ese portal (un segundo inicio de sesión con tu misma cuenta). ¿Conectar ahora?')) {
-        await window.conectarConPortalJovenes();
-      }
-    }
-    if (window._scoutSesionOk()) {
-      const resSync = await window.propagarDocumentacionAlPortal(joven.email, jovenId, documentacion);
-      if (!resSync.ok) alert('✅ Guardado en la Intranet, pero no se pudo reflejar en el Portal de Jóvenes (motivo: ' + resSync.motivo + ').');
-    } else {
-      alert('✅ Guardado en la Intranet. El checklist NO se reflejó en el Portal de Jóvenes porque no se conectó esa cuenta.');
-    }
+    alert('✅ Autorización guardada.');
     await generarPDFAutorizacion({ ...joven, ...datosForm.menor, autorizacionIngreso: autorizacionCompleta }, conFirma);
   };
 
@@ -4065,26 +4063,13 @@
     if (!joven) { alert('No se encontró el joven.'); return; }
     const datosForm = leerDatosAutorizacionDesdeDOM();
     const autorizacionCompleta = { ...datosForm, firmaAutorizante: window._autorizacionFirmaBase64 || null, actualizadoEn: Date.now() };
-    const documentacion = leerChecklistDesdeDOM(jovenId);
     try {
       await window.guardarJoven(jovenId, {
         dni: datosForm.menor.dni, nacionalidad: datosForm.menor.nacionalidad, domicilio: datosForm.menor.domicilio,
-        autorizacionIngreso: autorizacionCompleta, documentacion
+        autorizacionIngreso: autorizacionCompleta
       });
     } catch (err) { alert('⚠️ No se pudo guardar: ' + err.message); return; }
-
-    if (!window._scoutSesionOk()) {
-      if (confirm('Guardado en la Intranet. Para que el checklist de documentación se refleje también en el Portal de Jóvenes, hace falta conectar ese portal (un segundo inicio de sesión con tu misma cuenta). ¿Conectar ahora?')) {
-        await window.conectarConPortalJovenes();
-      }
-    }
-    if (window._scoutSesionOk()) {
-      const resSync = await window.propagarDocumentacionAlPortal(joven.email, jovenId, documentacion);
-      if (!resSync.ok) alert('✅ Guardado en la Intranet, pero no se pudo reflejar en el Portal de Jóvenes (motivo: ' + resSync.motivo + ').');
-    } else {
-      alert('✅ Guardado en la Intranet. El checklist NO se reflejó en el Portal de Jóvenes porque no se conectó esa cuenta.');
-    }
-    await generarPDFLegajoCompleto({ ...joven, ...datosForm.menor, autorizacionIngreso: autorizacionCompleta, documentacion });
+    await generarPDFLegajoCompleto({ ...joven, ...datosForm.menor, autorizacionIngreso: autorizacionCompleta, documentacion: joven.documentacion || {} });
   };
 
   async function generarPDFAutorizacion(joven, conFirma) {
