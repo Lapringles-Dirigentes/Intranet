@@ -1254,17 +1254,24 @@
   }
 
   const PDF_PAGE_W = 794, PDF_PAGE_H = 1123, PDF_PAD = 40;
-  async function medirAlturaPx(html) {
-    const div = document.createElement('div');
-    div.style.position = 'fixed'; div.style.left = '-9999px'; div.style.top = '0';
-    div.style.width = (PDF_PAGE_W - PDF_PAD * 2) + 'px';
-    div.className = 'pdf-measure';
-    div.innerHTML = html;
-    document.body.appendChild(div);
+
+  // Mide varios bloques de una sola vez (una sola espera de renderizado, no una por bloque)
+  async function medirAlturasBatch(htmls) {
+    const cont = document.createElement('div');
+    cont.style.position = 'fixed'; cont.style.left = '0'; cont.style.top = '0'; cont.style.zIndex = '-1000';
+    cont.style.width = (PDF_PAGE_W - PDF_PAD * 2) + 'px';
+    cont.className = 'pdf-measure';
+    const hijos = htmls.map(html => {
+      const div = document.createElement('div');
+      div.innerHTML = html;
+      cont.appendChild(div);
+      return div;
+    });
+    document.body.appendChild(cont);
     await new Promise(r => setTimeout(r, 30));
-    const h = div.offsetHeight;
-    document.body.removeChild(div);
-    return h;
+    const alturas = hijos.map(div => div.offsetHeight);
+    document.body.removeChild(cont);
+    return alturas;
   }
 
   // Corta los bloques de actividad de una fecha en tantas páginas como haga falta según el alto real
@@ -1273,8 +1280,7 @@
     let fechaHTML = `<div class="pdf-fecha-linea"><b>Fecha:</b> ${fechaFmt}</div>`;
     if (f.marcoCuento) fechaHTML += `<div class="pdf-fecha-linea"><b>Marco Simbólico / Cuentos de la Selva:</b> ${escapeHtml(f.marcoCuento)}</div>`;
     const bloques = [fechaHTML, ...f.filas.map(actividadBlockHTML)];
-    const alturas = [];
-    for (const b of bloques) alturas.push(await medirAlturaPx(b));
+    const alturas = await medirAlturasBatch(bloques);
 
     const alturaDisponible = PDF_PAGE_H - PDF_PAD * 2 - alturaHeaderPx - 40; // 40px margen para el pie "Página N"
     const paginas = [];
@@ -1294,7 +1300,7 @@
   }
 
   async function generarProgramaPDF(p) {
-    const alturaHeader = await medirAlturaPx(pdfHeaderHTML(p));
+    const [alturaHeader] = await medirAlturasBatch([pdfHeaderHTML(p)]);
     const pages = [];
 
     let front = '';
@@ -1342,14 +1348,18 @@
     await new Promise(r => setTimeout(r, 250));
 
     try {
-      const pageEls = cont.querySelectorAll('.pdf-page');
+      const pageEls = Array.from(cont.querySelectorAll('.pdf-page'));
       const pdf = new window.jspdf.jsPDF({ unit: 'px', format: [PDF_PAGE_W, PDF_PAGE_H] });
-      for (let i = 0; i < pageEls.length; i++) {
-        const canvas = await html2canvas(pageEls[i], { scale: 2, useCORS: true, scrollX: -window.scrollX, scrollY: -window.scrollY });
+      // Las páginas no dependen unas de otras, así que se capturan todas al mismo tiempo
+      // en vez de esperar una por una — con varias páginas esto es mucho más rápido.
+      const canvases = await Promise.all(pageEls.map(el =>
+        html2canvas(el, { scale: 2, useCORS: true, scrollX: -window.scrollX, scrollY: -window.scrollY })
+      ));
+      canvases.forEach((canvas, i) => {
         const imgData = canvas.toDataURL('image/jpeg', 0.92);
         if (i > 0) pdf.addPage([PDF_PAGE_W, PDF_PAGE_H]);
         pdf.addImage(imgData, 'JPEG', 0, 0, PDF_PAGE_W, PDF_PAGE_H);
-      }
+      });
       pdf.save(`Programa_${p.mes}_${p.rama}_${p.anio}.pdf`);
     } catch (err) {
       alert('⚠️ Error generando el PDF: ' + err.message);
